@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { MoreHorizontal, Download, PencilLine, Tags, Trash2 } from "lucide-react";
+import { MoreHorizontal, Download, FileOutput, PencilLine, Tags, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -15,12 +15,13 @@ import {
 import { RenameDialog } from "@/components/domain/documents/rename-dialog";
 import { DeleteDialog } from "@/components/domain/documents/delete-dialog";
 import { TagEditorDialog } from "@/components/domain/documents/tag-editor-dialog";
+import { SummaryDialog } from "@/components/domain/summaries/summary-dialog";
 import { getDownloadUrl } from "@/lib/api/documents";
 import { isConnectivityError, CONNECTIVITY_ERROR_MESSAGE } from "@/lib/api/error-messages";
 import type { DocumentListItem } from "@/lib/api/documents";
 
 export function DocumentRowActions({ document }: { document: DocumentListItem }) {
-  const [dialog, setDialog] = useState<"rename" | "delete" | "tags" | null>(null);
+  const [dialog, setDialog] = useState<"rename" | "delete" | "tags" | "summaries" | null>(null);
 
   async function handleDownload() {
     try {
@@ -63,6 +64,10 @@ export function DocumentRowActions({ document }: { document: DocumentListItem })
             <Tags className="size-4" aria-hidden="true" />
             Tags
           </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => setDialog("summaries")}>
+            <FileOutput className="size-4" aria-hidden="true" />
+            Summarize
+          </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem variant="destructive" onClick={() => setDialog("delete")}>
             <Trash2 className="size-4" aria-hidden="true" />
@@ -88,6 +93,11 @@ export function DocumentRowActions({ document }: { document: DocumentListItem })
         currentTags={document.tags}
         open={dialog === "tags"}
         onOpenChange={(open) => setDialog(open ? "tags" : null)}
+      />
+      <SummaryDialog
+        documentId={document.id}
+        open={dialog === "summaries"}
+        onOpenChange={(open) => setDialog(open ? "summaries" : null)}
       />
     </>
   );

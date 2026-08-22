@@ -23,5 +23,13 @@ class Settings(BaseSettings):
     embedding_provider: str = "fake"
     openai_api_key: str | None = None
 
+    # decisions.md ADR-011/OQ-02: LLMProvider is mandatory, provider choice
+    # is configurable. "fake" (deterministic, scriptable, zero-cost) is the
+    # default until an Anthropic key is supplied, and is also the required
+    # provider for LangGraph node tests (testing.md §4.1's "LLM call
+    # mocked" requirement).
+    llm_provider: str = "fake"
+    anthropic_api_key: str | None = None
+
 
 settings = Settings()

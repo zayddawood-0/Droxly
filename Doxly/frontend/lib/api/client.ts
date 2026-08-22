@@ -38,16 +38,30 @@ export async function apiFetch<T>(
   path: string,
   options: ApiFetchOptions = {},
 ): Promise<T> {
+  return parseResponse<T>(await fetchWithRefresh(path, options));
+}
+
+/**
+ * The same session-refresh-and-retry behavior `apiFetch` uses, but
+ * returning the raw `Response` instead of a parsed JSON body — for callers
+ * that need the response as a stream (SSE chat, `lib/api/chat.ts`) rather
+ * than a single parsed object. Kept in this module rather than duplicated
+ * so the CSRF/refresh logic has exactly one implementation.
+ */
+export async function fetchWithRefresh(
+  path: string,
+  options: ApiFetchOptions = {},
+): Promise<Response> {
   const response = await rawFetch(path, options);
 
   if (response.status === 401 && !REFRESH_EXEMPT_PATHS.has(path)) {
     const refreshed = await refreshAccessToken();
     if (refreshed) {
-      return parseResponse<T>(await rawFetch(path, options));
+      return rawFetch(path, options);
     }
   }
 
-  return parseResponse<T>(response);
+  return response;
 }
 
 function rawFetch(path: string, options: ApiFetchOptions) {

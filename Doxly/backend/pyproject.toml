@@ -20,6 +20,9 @@ dependencies = [
   # (skills/backend.md §13) — promoted from dev-only now that app/ai/ has a
   # real (if not yet default) OpenAI-calling provider.
   "httpx>=0.27",
+  # LangGraph: the mandatory workflow engine for the four stateful AI
+  # graphs (decisions.md ADR-004) — not hand-rolled orchestration.
+  "langgraph>=1.2",
 ]
 
 [project.optional-dependencies]

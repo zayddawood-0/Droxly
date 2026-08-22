@@ -267,6 +267,13 @@ Timestamps: ISO 8601 UTC, e.g. `2026-08-19T14:30:00Z`. IDs: UUIDv4 strings every
 - **Response 200:** `{ message_id: uuid, status: "stopped" }`. Signals the in-flight LangGraph run for `message_id` to halt after its current node; the assistant message is persisted with whatever partial content had streamed so far, marked `status="stopped"` so the UI can distinguish a user-initiated stop from a failure.
 - **Errors:** `404` if `message_id` doesn't belong to the caller or the conversation | `409 not_in_progress` if the message has already completed or was never streaming.
 
+### `POST /api/v1/chat/conversations/{id}/messages/{message_id}/regenerate`
+- **Auth:** required. **AI rate limit** (§0.7). **Fulfills:** `FR-AI-006` ("Regenerate" — added at Phase 9 implementation time; `ui-ux.md` §8 documented this interaction but no endpoint existed for it, a gap resolved here per `CLAUDE.md`'s SDD rules rather than left implicit).
+- **Path param:** `message_id` — an existing **assistant** message in this conversation whose turn is being re-run.
+- **Request:** none. The preceding user message (found by walking back from `message_id` to the nearest prior `role="user"` message) supplies the query — regenerating never creates a duplicate user turn.
+- **Response 200, `Content-Type: text/event-stream`:** identical event contract to `POST .../messages` (`event: message_id` → `data: {"message_id": uuid}`, then `token`/`citations`/`done`/`error`), except the initial `message_id` event echoes the **existing** user message's ID rather than a newly created one. The regenerated answer is persisted as a **new** `messages` row appended to the conversation (the schema is append-only; no message is edited or superseded in place) — the UI decides how to present the newest attempt relative to prior ones.
+- **Errors (returned as standard JSON before the stream opens):** `404` if `message_id` doesn't belong to the caller/conversation, isn't an assistant message, or has no preceding user message | `409 document_not_ready` if a referenced document is no longer `ready` | `429` AI rate limit exceeded.
+
 ---
 
 ## 5. `/summaries`

@@ -29,6 +29,7 @@ import { FileTypeIcon } from "@/components/domain/documents/file-type-icon";
 import { RenameDialog } from "@/components/domain/documents/rename-dialog";
 import { DeleteDialog } from "@/components/domain/documents/delete-dialog";
 import { TagEditorDialog } from "@/components/domain/documents/tag-editor-dialog";
+import { SummaryDialog } from "@/components/domain/summaries/summary-dialog";
 import { useDocumentQuery, useReprocessDocumentMutation } from "@/hooks/use-documents";
 import { useDocumentStatusStream } from "@/hooks/use-document-status-stream";
 import { getDownloadUrl, type DocumentStatus } from "@/lib/api/documents";
@@ -36,7 +37,7 @@ import { formatBytes } from "@/lib/constants/documents";
 import { isConnectivityError, CONNECTIVITY_ERROR_MESSAGE } from "@/lib/api/error-messages";
 import { isDoxlyApiError } from "@/lib/types/errors";
 
-type DialogKind = "rename" | "delete" | "tags" | null;
+type DialogKind = "rename" | "delete" | "tags" | "summaries" | null;
 
 export function DocumentViewer({ documentId }: { documentId: string }) {
   const router = useRouter();
@@ -142,7 +143,7 @@ export function DocumentViewer({ documentId }: { documentId: string }) {
           <ActionButton icon={Sparkles} label="Chat about this" href={`/chat`} />
           <ActionButton icon={FileSearch} label="Extract" href={`/extractions`} />
           <ActionButton icon={ArrowLeftRight} label="Compare" href={`/compare`} />
-          <ActionButton icon={FileOutput} label="Summarize" comingSoon />
+          <ActionButton icon={FileOutput} label="Summarize" onClick={() => setDialog("summaries")} />
           <div className="hidden border-t border-border lg:my-1 lg:block" />
           <ActionButton icon={Download} label="Download" onClick={handleDownload} />
           <ActionButton icon={PencilLine} label="Rename" onClick={() => setDialog("rename")} />
@@ -174,6 +175,11 @@ export function DocumentViewer({ documentId }: { documentId: string }) {
         open={dialog === "delete"}
         onOpenChange={(open) => setDialog(open ? "delete" : null)}
         onDeleted={() => router.push("/documents")}
+      />
+      <SummaryDialog
+        documentId={document.id}
+        open={dialog === "summaries"}
+        onOpenChange={(open) => setDialog(open ? "summaries" : null)}
       />
     </>
   );

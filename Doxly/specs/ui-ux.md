@@ -22,7 +22,7 @@ Doxly
 ⚙ Settings
 ```
 
-The active route is indicated by a filled icon/label state, not a heavy background block — consistent with the minimal brand direction in `design.md`. Admin is intentionally **not** in this list (see §14). Unauthenticated pages (Landing, Login, Register) use a separate marketing/auth layout with no sidebar.
+The active route is indicated by a filled icon/label state, not a heavy background block — consistent with the minimal brand direction in `design.md`. Admin is intentionally **not** in this list (see §15). Unauthenticated pages (Landing, Login, Register) use a separate marketing/auth layout with no sidebar.
 
 Global elements available from any authenticated page: a command/search trigger (keyboard shortcut, opens Global Search), a user menu (avatar → profile/settings/logout), and a toast region (bottom-right) for async operation results (`FR-DOC-008` status changes, extraction/comparison completion).
 
@@ -132,7 +132,22 @@ Global elements available from any authenticated page: a command/search trigger 
 - **Responsive behavior:** Conversation list becomes a slide-over drawer on mobile (thread is the primary view); composer remains fixed to the viewport bottom above the mobile keyboard.
 - **Accessibility:** New messages are announced via `aria-live="polite"` without interrupting screen-reader users mid-stream on every token; citation chips have descriptive accessible names ("Citation: page 4"); composer is a proper `textarea` with Enter-to-send / Shift+Enter-for-newline documented via a visible hint (`NFR-A11Y-001`).
 
-## 9. Extractions (`◇`)
+## 9. Summarization
+
+> Added at Phase 10 implementation time — this section was missing entirely (the page list jumped from AI Chat §8 to Extractions, with no Summarization entry), a gap resolved here per `CLAUDE.md`'s SDD rules rather than implemented against an assumed shape. Not a standalone nav page — the approved frontend plan describes this as "a summary entry point from Viewer/Documents, type selector, polling result view," consistent with `FR-SUM-*` never appearing in `specs/roadmap.md`'s route/IA discussion as its own destination.
+
+- **Purpose:** Get a quick, persisted summary of a document at a chosen detail level, and revisit past summaries without regenerating them. Serves `FR-SUM-001`, `FR-SUM-002`.
+- **Layout:** A `Dialog` launched from two entry points — the Document Viewer's action rail ("Summarize") and each Documents-list row's overflow menu ("Summarize") — never a dedicated route. The dialog has two regions: a past-summaries list (type badge + relative date, newest first, per `FR-SUM-002`'s "never overwrites, always accessible") and a "Generate new summary" affordance with a type selector; selecting a past summary or a freshly-completed one shows its full content in the same dialog.
+- **Components:** shadcn `Dialog`, `Select` (or a small segmented control) for `summary_type` (brief / detailed / bullet points), `Badge` for type + the shared `StatusBadge`-style processing indicator while a generation is in flight, a plain scrollable text region for summary content (bullet points rendered as a real list, not literal `-` characters).
+- **Interactions:** "Generate" (disabled while another generation for this document is already `processing`) posts the request and immediately shows the new entry in the list in a processing state; the client polls `GET /summaries/{id}` (api.md §5 — no SSE for this workflow, it's a queued background job) until `status` leaves `processing`; clicking any list entry (past or freshly completed) shows its content inline, never navigating away from the dialog.
+- **Loading states:** A processing entry shows the shared pulsing/animated status treatment (matching the Processing Indicators vocabulary in principle, though this is a job status, not a document pipeline status) with a short explanatory line ("Generating your summary — this can take a moment"), not a fake progress percentage.
+- **Empty state:** No summaries yet for this document → the dialog opens directly to the type-selector/Generate view instead of an empty list with nothing to click.
+- **Error state:** A failed generation shows inline on that list entry with the reason and a "Retry" action that re-submits the same type as a new request (per `FR-SUM-002`, retries never overwrite — a fresh row is created); a list-fetch failure shows a retry affordance in place of the list.
+- **Success state:** The completed summary's content is shown in place of the processing indicator, with a toast ("Summary ready") only if the dialog was closed or the tab was backgrounded when it finished — not an intrusive toast while the user is already watching it complete.
+- **Responsive behavior:** Uses the same shared `Dialog` every other dialog in the app uses (a responsive centered modal capped at `calc(100%-2rem)` width, not a sheet — no dialog in this codebase converts to a sheet at mobile width, so this one doesn't invent that pattern either); the past-summaries list and the content view stack vertically rather than side-by-side at any width — this dialog was never a two-pane layout.
+- **Accessibility:** The type selector has a visible label, not placeholder-only; the processing→success transition is announced via `aria-live="polite"` once (on completion), not on every poll tick; Retry is keyboard-reachable and appears in the same tab order as the failed entry it belongs to.
+
+## 10. Extractions (`◇`)
 
 - **Purpose:** Turn a document into structured data. Serves `FR-EXT-001` through `FR-EXT-004`.
 - **Layout:** Document + schema selection step (preset template gallery or "Custom schema" builder) followed by a results view once extraction completes: a field table (Field | Value | Confidence | Source | Edit).
@@ -145,7 +160,7 @@ Global elements available from any authenticated page: a command/search trigger 
 - **Responsive behavior:** Field table becomes a stacked card-per-field layout on mobile (label/value/confidence/source stacked, not a horizontally scrolling table).
 - **Accessibility:** Editable cells are keyboard-operable (Enter to edit, Escape to cancel); confidence is conveyed with text/icon in addition to color.
 
-## 10. Comparison (`⇄`)
+## 11. Comparison (`⇄`)
 
 - **Purpose:** Understand differences between two documents. Serves `FR-COMP-001` through `FR-COMP-003`.
 - **Layout:** Document A / Document B picker (two document-select combobox inputs) → report view: a change-summary strip (counts by type) above a side-by-side (desktop) or unified (mobile) diff-style rendering with inline change-type badges.
@@ -158,7 +173,7 @@ Global elements available from any authenticated page: a command/search trigger 
 - **Responsive behavior:** Side-by-side collapses to unified/stacked diff on mobile and narrow tablet.
 - **Accessibility:** Change-type badges carry text labels, not color alone; diff regions are navigable via a "next change" keyboard shortcut for long documents.
 
-## 11. Global Search (`⌕`)
+## 12. Global Search (`⌕`)
 
 - **Purpose:** Find content across the user's whole corpus. Serves `FR-SEARCH-001` through `FR-SEARCH-003`.
 - **Layout:** Prominent search input (also reachable via the global command trigger from §0) + filter row (type/tag/date) + results list (document-level cards with highlighted matching snippets, potentially multiple snippets per document).
@@ -171,7 +186,7 @@ Global elements available from any authenticated page: a command/search trigger 
 - **Responsive behavior:** Filter row collapses into a "Filters" sheet on mobile; results remain a single-column list at all sizes.
 - **Accessibility:** Results count announced via `aria-live` on query change; snippet highlighting uses `<mark>` semantics, not color-only spans.
 
-## 12. Analytics (`◉`)
+## 13. Analytics (`◉`)
 
 - **Purpose:** Personal usage insight. Serves `FR-ANALYTICS-001` (and `FR-ANALYTICS-002` where applicable).
 - **Layout:** A grid of compact stat cards (documents processed, storage used, AI requests this period) above one or two minimal charts (documents-over-time, AI requests-over-time) and a "most-used features" small list/bar.
@@ -184,7 +199,7 @@ Global elements available from any authenticated page: a command/search trigger 
 - **Responsive behavior:** Stat card grid reflows 4→2→1 columns; charts remain legible at mobile width (simplify tick density rather than shrinking illegibly).
 - **Accessibility:** Charts have a text/table equivalent or accessible summary for screen-reader users, not visual-only data.
 
-## 13. Settings (`⚙`)
+## 14. Settings (`⚙`)
 
 - **Purpose:** Account, security, plan, and data control in one place. Serves `FR-USER-001/002/003`, `FR-AUTH-008`, `FR-SETTINGS-001`, `FR-EXPORT-004`.
 - **Layout:** Sectioned single page (or sub-tabs): Profile, Security (sessions list, password change), Plan & Usage, Notifications, Data Export, Danger Zone (account deletion) — Danger Zone visually separated (border/color) and placed last.
@@ -197,7 +212,7 @@ Global elements available from any authenticated page: a command/search trigger 
 - **Responsive behavior:** Sections stack vertically on mobile; sub-tab navigation (if used) becomes a horizontal scroll or select dropdown.
 - **Accessibility:** Danger Zone actions are not reachable by a single accidental keystroke (confirmation dialog required); form sections have proper fieldset/legend grouping.
 
-## 14. Admin (role = `admin` only)
+## 15. Admin (role = `admin` only)
 
 - **Purpose:** Internal operational tooling. Serves `FR-ADMIN-001` through `FR-ADMIN-003`. Explicitly **not** linked from the standard sidebar — reached via a distinct route guarded by role check, with a visually distinct (e.g., muted/utility) chrome so it never feels like a "power user" area of the consumer product.
 - **Layout:** Simple internal-tool layout: a left tab set (Users, System Health) rather than the consumer sidebar; a suspend-confirmation dialog.
@@ -211,7 +226,7 @@ Global elements available from any authenticated page: a command/search trigger 
 
 ---
 
-## 15. Design System Foundations
+## 16. Design System Foundations
 
 ### Typography
 A single clean, modern sans-serif carries UI text (body, labels, data) at a restrained, legible scale (roughly 6–7 steps from small metadata text up to page headings) with consistent line-height tuned for scanning dense document/data content rather than long-form reading. Marketing surfaces (Landing) may pair a slightly more expressive sans for display headings, but never a decorative/script face — the brand is confident and modern, not playful-to-the-point-of-unserious. Numeric/data-heavy contexts (Analytics stat cards, extraction confidence scores, file sizes) use tabular figures so columns align.

@@ -149,7 +149,7 @@ Per Section 37 of the initialization brief, every open question below has an exp
 - **Question:** Which exact models back chat/summarization/extraction vs. cheap classification nodes?
 - **Recommended default:** Primary: latest Claude Sonnet-class model for generation-quality nodes (answer generation, summarization, extraction). Secondary/cheap: latest Claude Haiku-class model for classification/routing nodes in LangGraph (query classifier, document classifier) to control cost/latency.
 - **Why:** Matches cost/quality tiering already implied by the LangGraph node design in `specs/langgraph.md` (classifiers don't need the strongest model).
-- **Status:** **Assumption** — revisit at Phase 8/9 implementation time as model catalog evolves.
+- **Status:** **Decided, confirmed at Phase 8 implementation time.** `app/ai/llm.py`'s `ANTHROPIC_MODEL_IDS` table maps `STANDARD` → Claude Sonnet 5, `FAST` → Claude Haiku 4.5 — the one place a model upgrade happens, matching ai.md §2's "a model upgrade is a config change, not a code change across every node." `LLMProvider` ships with `AnthropicLLMProvider` (this real, tier-mapped default) and `FakeLLMProvider` (deterministic/scriptable — the active default until `ANTHROPIC_API_KEY` is configured, and the required provider for LangGraph node tests per `testing.md` §4.1's "LLM call mocked"), mirroring OQ-03's Phase 6 resolution for embeddings exactly.
 
 ### OQ-03 — Embedding provider & dimensionality
 - **Question:** OpenAI vs. Voyage AI vs. open-source embeddings?
