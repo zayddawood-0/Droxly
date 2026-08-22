@@ -95,6 +95,13 @@ export function deleteDocument(id: string) {
   return apiFetch<void>(`/documents/${id}`, { method: "DELETE" });
 }
 
+/** FR-PROC-005 — re-enqueues extract→chunk→embed for a `failed` document only (api.md: 409 otherwise). */
+export function reprocessDocument(id: string) {
+  return apiFetch<{ id: string; status: "queued" }>(`/documents/${id}/reprocess`, {
+    method: "POST",
+  });
+}
+
 /** FR-DOC-003 — short-lived presigned GET to the original file. */
 export function getDownloadUrl(id: string) {
   return apiFetch<{ download_url: string; expires_in: number }>(

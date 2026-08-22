@@ -9,7 +9,9 @@ import {
   deleteDocument,
   getDocument,
   listDocuments,
+  reprocessDocument,
   updateDocument,
+  type DocumentDetail,
   type DocumentListParams,
 } from "@/lib/api/documents";
 
@@ -50,6 +52,20 @@ export function useDeleteDocumentMutation() {
   return useMutation({
     mutationFn: (id: string) => deleteDocument(id),
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["documents"] });
+    },
+  });
+}
+
+/** FR-PROC-005 — "Retry processing" on a `failed` document (ui-ux.md §7). */
+export function useReprocessDocumentMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => reprocessDocument(id),
+    onSuccess: (result, id) => {
+      queryClient.setQueryData(documentKey(id), (prev: DocumentDetail | undefined) =>
+        prev ? { ...prev, status: result.status, processing_error: null } : prev,
+      );
       queryClient.invalidateQueries({ queryKey: ["documents"] });
     },
   });

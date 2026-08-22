@@ -12,7 +12,6 @@ import {
   PencilLine,
   Trash2,
   Tags,
-  Clock,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -30,8 +29,9 @@ import { FileTypeIcon } from "@/components/domain/documents/file-type-icon";
 import { RenameDialog } from "@/components/domain/documents/rename-dialog";
 import { DeleteDialog } from "@/components/domain/documents/delete-dialog";
 import { TagEditorDialog } from "@/components/domain/documents/tag-editor-dialog";
-import { useDocumentQuery } from "@/hooks/use-documents";
-import { getDownloadUrl } from "@/lib/api/documents";
+import { useDocumentQuery, useReprocessDocumentMutation } from "@/hooks/use-documents";
+import { useDocumentStatusStream } from "@/hooks/use-document-status-stream";
+import { getDownloadUrl, type DocumentStatus } from "@/lib/api/documents";
 import { formatBytes } from "@/lib/constants/documents";
 import { isConnectivityError, CONNECTIVITY_ERROR_MESSAGE } from "@/lib/api/error-messages";
 import { isDoxlyApiError } from "@/lib/types/errors";
@@ -42,6 +42,21 @@ export function DocumentViewer({ documentId }: { documentId: string }) {
   const router = useRouter();
   const query = useDocumentQuery(documentId);
   const [dialog, setDialog] = useState<DialogKind>(null);
+  const reprocess = useReprocessDocumentMutation();
+
+  useDocumentStatusStream(documentId, query.data?.status);
+
+  function handleReprocess() {
+    reprocess.mutate(documentId, {
+      onError: (error) => {
+        toast.error(
+          isConnectivityError(error)
+            ? CONNECTIVITY_ERROR_MESSAGE
+            : "Couldn't restart processing. Please try again.",
+        );
+      },
+    });
+  }
 
   async function handleDownload() {
     try {
@@ -115,7 +130,12 @@ export function DocumentViewer({ documentId }: { documentId: string }) {
 
       <div className="mt-6 flex flex-col gap-6 lg:flex-row">
         <div className="min-w-0 flex-1 rounded-lg border border-border">
-          <DocumentContentPane status={document.status} processingError={document.processing_error} />
+          <DocumentContentPane
+            status={document.status}
+            processingError={document.processing_error}
+            onReprocess={handleReprocess}
+            reprocessing={reprocess.isPending}
+          />
         </div>
 
         <div className="flex gap-2 overflow-x-auto lg:w-56 lg:shrink-0 lg:flex-col lg:overflow-visible">
@@ -159,16 +179,27 @@ export function DocumentViewer({ documentId }: { documentId: string }) {
   );
 }
 
+const STAGE_DESCRIPTION: Record<string, string> = {
+  queued: "Waiting in the processing queue — this is usually quick.",
+  extracting: "Reading the file and pulling out its text.",
+  chunking: "Splitting the extracted text into searchable sections.",
+  embedding: "Generating semantic embeddings for search and chat.",
+};
+
 function DocumentContentPane({
   status,
   processingError,
+  onReprocess,
+  reprocessing,
 }: {
-  status: string;
+  status: DocumentStatus;
   processingError: string | null;
+  onReprocess: () => void;
+  reprocessing: boolean;
 }) {
   if (status === "ready") {
-    // Extracted-text/original-file rendering is Phase 5 scope (FR-DOC-003's
-    // content half depends on the processing pipeline landing first).
+    // Extracted-text/original-file rendering is Phase 6+ scope (RAG/Q&A
+    // land the retrieval pipeline this pane will eventually surface).
     return (
       <div className="flex flex-col items-center justify-center gap-2 px-6 py-24 text-center text-sm text-muted-foreground">
         Document content view is coming soon.
@@ -178,21 +209,26 @@ function DocumentContentPane({
 
   if (status === "failed") {
     return (
-      <div className="flex flex-col items-center justify-center gap-2 px-6 py-24 text-center">
+      <div className="flex flex-col items-center justify-center gap-3 px-6 py-24 text-center">
+        <StatusBadge status="failed" processingError={processingError} />
         <p className="text-sm font-medium text-danger">Processing failed</p>
         <p className="max-w-sm text-sm text-muted-foreground">
           {processingError ?? "Something went wrong while processing this document."}
         </p>
+        <Button variant="outline" size="sm" onClick={onReprocess} disabled={reprocessing}>
+          {reprocessing ? "Retrying…" : "Retry processing"}
+        </Button>
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col items-center justify-center gap-2 px-6 py-24 text-center">
-      <Clock className="size-6 text-muted-foreground" aria-hidden="true" />
-      <p className="text-sm text-muted-foreground">
-        This document is {status === "queued" ? "queued for processing" : status}.
-      </p>
+    <div
+      className="flex flex-col items-center justify-center gap-3 px-6 py-24 text-center"
+      aria-live="polite"
+    >
+      <StatusBadge status={status} />
+      <p className="max-w-sm text-sm text-muted-foreground">{STAGE_DESCRIPTION[status]}</p>
     </div>
   );
 }
