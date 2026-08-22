@@ -15,5 +15,13 @@ class Settings(BaseSettings):
     environment: str = "local"
     database_url: str = "postgresql+asyncpg://doxly:doxly@localhost:5432/doxly"
 
+    # decisions.md ADR-012/OQ-03: EmbeddingProvider is mandatory, provider
+    # choice is configurable. "fake" (deterministic, offline, zero-cost) is
+    # the default until an OpenAI key is supplied — resolved for local/dev
+    # use per OQ-03's "confirm before Phase 6" note; swapping to "openai"
+    # requires openai_api_key and changes nothing else (app/ai/embeddings.py).
+    embedding_provider: str = "fake"
+    openai_api_key: str | None = None
+
 
 settings = Settings()

@@ -12,13 +12,20 @@ dependencies = [
   "pydantic>=2.9",
   "pydantic-settings>=2.6",
   "pgvector>=0.3.6",
+  # tiktoken: rag.md §3 stores token_count "used ... to budget precisely
+  # rather than estimating" — a real BPE tokenizer is what makes that true;
+  # cl100k_base also matches the ADR-012 default embedding model's tokenizer.
+  "tiktoken>=0.14",
+  # httpx: the async HTTP client for EmbeddingProvider/LLMProvider calls
+  # (skills/backend.md §13) — promoted from dev-only now that app/ai/ has a
+  # real (if not yet default) OpenAI-calling provider.
+  "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
 dev = [
   "pytest>=8.3",
   "pytest-asyncio>=0.24",
-  "httpx>=0.27",
   "ruff>=0.16",
   "black>=26.0",
 ]

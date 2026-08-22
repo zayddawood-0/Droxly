@@ -155,7 +155,7 @@ Per Section 37 of the initialization brief, every open question below has an exp
 - **Question:** OpenAI vs. Voyage AI vs. open-source embeddings?
 - **Recommended default:** OpenAI `text-embedding-3-small`, 1536 dimensions (ADR-012).
 - **Why:** Cheapest, most documented, sufficient quality for document RAG at MVP scale; swappable later.
-- **Status:** **Assumption** — confirm before Phase 6 (Embeddings & Vector Search).
+- **Status:** **Decided, confirmed at Phase 6 implementation time.** `EmbeddingProvider` (ADR-012) ships with two implementations: `OpenAIEmbeddingProvider` (the real `text-embedding-3-small` default, activated by setting `EMBEDDING_PROVIDER=openai` + `OPENAI_API_KEY`) and `FakeEmbeddingProvider` (deterministic, feature-hashing based, zero-cost — the *active default* until a key is supplied, and permanently the required provider for RAG-layer tests per `testing.md` §4's "never a live embedding API call in this layer"). No product/service code depends on which one is active — only `app/ai/embeddings.py`'s `get_embedding_provider()` reads the setting. Switching to real embeddings for a given environment is a config change, not a code change.
 
 ### OQ-04 — File storage provider
 - **Question:** Vercel Blob vs. S3 vs. Cloudflare R2 vs. GCS?
