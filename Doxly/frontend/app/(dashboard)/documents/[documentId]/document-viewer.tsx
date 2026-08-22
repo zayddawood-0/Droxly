@@ -141,8 +141,8 @@ export function DocumentViewer({ documentId }: { documentId: string }) {
 
         <div className="flex gap-2 overflow-x-auto lg:w-56 lg:shrink-0 lg:flex-col lg:overflow-visible">
           <ActionButton icon={Sparkles} label="Chat about this" href={`/chat`} />
-          <ActionButton icon={FileSearch} label="Extract" href={`/extractions`} />
-          <ActionButton icon={ArrowLeftRight} label="Compare" href={`/compare`} />
+          <ActionButton icon={FileSearch} label="Extract" href={`/extractions?document=${document.id}`} />
+          <ActionButton icon={ArrowLeftRight} label="Compare" href={`/compare?document_a=${document.id}`} />
           <ActionButton icon={FileOutput} label="Summarize" onClick={() => setDialog("summaries")} />
           <div className="hidden border-t border-border lg:my-1 lg:block" />
           <ActionButton icon={Download} label="Download" onClick={handleDownload} />

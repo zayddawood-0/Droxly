@@ -340,7 +340,10 @@ Summaries are generated asynchronously on the background worker (`ai.md` §2 —
 
 ### `GET /api/v1/comparisons/{id}`
 - **Auth:** required. **Fulfills:** `FR-COMP-002`.
-- **Response 200:** `{ id, document_a_id, document_b_id, status, result: { additions: [...], deletions: [...], modifications: [{ change_type: string, a_excerpt: string, b_excerpt: string, explanation: string }], alignment_quality: "high"|"medium"|"low" }, created_at }`. When the two documents are too structurally dissimilar for meaningful semantic alignment (`FR-COMP-003`), `alignment_quality="low"` and `result` carries an explanatory `message` instead of a forced diff.
+- **Response 200:** `{ id, document_a_id, document_b_id, status, result: ComparisonResult|null, created_at }`. `result` is `null` while `status="processing"`.
+  - `ComparisonResult`: `{ alignment_quality: "high"|"medium"|"low", message: string|null, additions: ComparisonSegment[], deletions: ComparisonSegment[], modifications: ComparisonModification[] }`. When the two documents are too structurally dissimilar for meaningful semantic alignment (`FR-COMP-003`), `alignment_quality="low"`, `message` carries the explanatory text, and `additions`/`deletions`/`modifications` are empty arrays instead of a forced diff.
+  - `ComparisonSegment` (a pure addition or deletion — content on only one side): `{ document: "a"|"b", page_number: int|null, excerpt: string }`.
+  - `ComparisonModification` (an aligned pair with a detected change on both sides): `{ change_type: "factual"|"numeric"|"wording", a_page_number: int|null, a_excerpt: string, b_page_number: int|null, b_excerpt: string, explanation: string }` — the three categories `ui-ux.md` §11's `ChangeTypeBadge` renders (`langgraph.md` §5's Change Classification node lists these as its concrete categories).
 - **Errors:** `404`.
 
 ### `GET /api/v1/comparisons`

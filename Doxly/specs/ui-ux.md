@@ -163,10 +163,11 @@ Global elements available from any authenticated page: a command/search trigger 
 ## 11. Comparison (`⇄`)
 
 - **Purpose:** Understand differences between two documents. Serves `FR-COMP-001` through `FR-COMP-003`.
-- **Layout:** Document A / Document B picker (two document-select combobox inputs) → report view: a change-summary strip (counts by type) above a side-by-side (desktop) or unified (mobile) diff-style rendering with inline change-type badges.
+- **Layout:** Document A / Document B picker (two document-select combobox inputs) above a **past comparisons list** (this user's comparison history, per `GET /comparisons` — `FR-COMP-002`) → report view: a change-summary strip (counts by type) above a side-by-side (desktop) or unified (mobile) diff-style rendering with inline change-type badges.
 - **Components:** `DocumentPicker` (×2), `ChangeSummaryStrip`, `DiffView` (side-by-side and unified variants), `ChangeTypeBadge` (addition/deletion/modification/factual/numeric/wording, each a distinct color+icon pairing).
-- **Interactions:** Selecting both documents enables "Compare"; report supports filtering by change type; clicking a change scrolls/highlights the corresponding location in both documents (side-by-side view).
+- **Interactions:** Selecting both documents enables "Compare"; clicking a past comparison opens its persisted report directly (no re-run); report supports filtering by change type; clicking a change scrolls/highlights the corresponding location in both documents (side-by-side view).
 - **Loading states:** Report-pending state with progress framing similar to Extractions (background AI job, not ingestion).
+- **Empty state:** No past comparisons yet → prompt to pick two documents and run one, distinct from the loading skeleton and from a fetch failure.
 - **Empty/degraded state:** When documents are too structurally different to align meaningfully (`FR-COMP-003`), the report view is replaced by an explicit message explaining why a meaningful diff isn't available, plus a fallback (e.g., "View both documents side-by-side without alignment") rather than forcing a misleading diff.
 - **Error state:** Comparison job failure shows a retry action.
 - **Success state:** Toast on completion; the report itself persists and is revisitable (not regenerated per view).

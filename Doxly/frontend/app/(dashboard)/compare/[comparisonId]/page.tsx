@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { PageHeader } from "@/components/layout/page-header";
-import { PhasePlaceholder } from "@/components/layout/phase-placeholder";
+import { ComparisonReportView } from "./comparison-report-view";
 
 export const metadata: Metadata = { title: "Comparison report" };
 
@@ -13,14 +13,8 @@ export default async function ComparisonReportPage({
 
   return (
     <>
-      <PageHeader
-        title="Comparison report"
-        description={`Comparison ${comparisonId}`}
-      />
-      <PhasePlaceholder
-        phase="Phase 12 — Comparison"
-        requirements="FR-COMP-002, FR-COMP-003"
-      />
+      <PageHeader title="Comparison report" description="Additions, deletions, and modifications between the two documents." />
+      <ComparisonReportView comparisonId={comparisonId} />
     </>
   );
 }

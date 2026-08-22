@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { PageHeader } from "@/components/layout/page-header";
-import { PhasePlaceholder } from "@/components/layout/phase-placeholder";
+import { ExtractionResultsView } from "./extraction-results-view";
 
 export const metadata: Metadata = { title: "Extraction results" };
 
@@ -13,14 +13,8 @@ export default async function ExtractionResultsPage({
 
   return (
     <>
-      <PageHeader
-        title="Extraction results"
-        description={`Extraction ${extractionId}`}
-      />
-      <PhasePlaceholder
-        phase="Phase 11 — Extraction"
-        requirements="FR-EXT-001, FR-EXT-003, FR-EXT-004"
-      />
+      <PageHeader title="Extraction results" description="Field-by-field, with confidence and source." />
+      <ExtractionResultsView extractionId={extractionId} />
     </>
   );
 }

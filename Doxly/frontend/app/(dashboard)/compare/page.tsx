@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import { PageHeader } from "@/components/layout/page-header";
-import { PhasePlaceholder } from "@/components/layout/phase-placeholder";
+import { CompareView } from "./compare-view";
 
 export const metadata: Metadata = { title: "Compare" };
 
@@ -11,10 +12,9 @@ export default function ComparePage() {
         title="Compare"
         description="See exactly what changed between two documents."
       />
-      <PhasePlaceholder
-        phase="Phase 12 — Comparison"
-        requirements="FR-COMP-001, FR-COMP-003"
-      />
+      <Suspense fallback={null}>
+        <CompareView />
+      </Suspense>
     </>
   );
 }
