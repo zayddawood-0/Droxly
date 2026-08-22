@@ -41,6 +41,19 @@ class TenantScopedRepository[ModelT: Base]:
         )
         return result.scalars().all()
 
+    async def get_many(
+        self, user_id: uuid.UUID, ids: Sequence[uuid.UUID]
+    ) -> Sequence[ModelT]:
+        """Batch fetch (e.g. Phase 7's context-assembly provenance lookup) — still owner-scoped, never trusts the id list alone."""
+        if not ids:
+            return []
+        result = await self.session.execute(
+            select(self.model).where(
+                self.model.id.in_(ids), self.model.user_id == user_id
+            )
+        )
+        return result.scalars().all()
+
     async def create(self, user_id: uuid.UUID, **fields) -> ModelT:
         instance = self.model(user_id=user_id, **fields)
         self.session.add(instance)

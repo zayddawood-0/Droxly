@@ -64,6 +64,7 @@ class DocumentChunkRepository(TenantScopedRepository[DocumentChunk]):
         query_embedding: list[float],
         *,
         document_id: uuid.UUID | None = None,
+        document_ids: Sequence[uuid.UUID] | None = None,
         k: int = 8,
         min_similarity: float = 0.75,
     ) -> list[ChunkSearchResult]:
@@ -75,7 +76,11 @@ class DocumentChunkRepository(TenantScopedRepository[DocumentChunk]):
         design the denormalization exists for). Results below
         `min_similarity` are discarded here per rag.md §6's relevance
         threshold; routing a zero-result set to a "can't answer" response is
-        Phase 7's concern (rag.md §10), not this method's.
+        the caller's concern (rag.md §10), not this method's.
+
+        `document_id` scopes to a single document (rag.md §7 point 2,
+        single-document chat); `document_ids` scopes to a set (multi-document
+        chat) — a caller passes at most one of the two.
         """
         distance = DocumentChunk.embedding.cosine_distance(query_embedding)
         similarity = 1 - distance
@@ -89,6 +94,8 @@ class DocumentChunkRepository(TenantScopedRepository[DocumentChunk]):
         )
         if document_id is not None:
             stmt = stmt.where(DocumentChunk.document_id == document_id)
+        elif document_ids is not None:
+            stmt = stmt.where(DocumentChunk.document_id.in_(document_ids))
 
         result = await self.session.execute(stmt)
         return [
