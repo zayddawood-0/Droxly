@@ -17,6 +17,13 @@ services:
       # Placeholder — no backend exists yet to point at (specs/deployment.md §5.1).
       INTERNAL_API_URL: http://backend:8000
       NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+    # roadmap.md Phase 17 (Docker) hardening: `init: true` runs Docker's
+    # built-in tini as PID 1 so SIGTERM (docker compose stop/down) reaches
+    # the Next.js server and shuts it down cleanly instead of the container
+    # hanging until the stop timeout kills it. Healthcheck itself is defined
+    # once, in frontend/Dockerfile's HEALTHCHECK — Compose reads it from the
+    # built image rather than a second, duplicated definition here.
+    init: true
 
   postgres:
     # pgvector/pgvector (not plain postgres + manual extension install) keeps

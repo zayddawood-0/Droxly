@@ -9,3 +9,6 @@ e2e
 *.test.ts
 *.test.tsx
 coverage
+tsconfig.tsbuildinfo
+*.md
+.vscode

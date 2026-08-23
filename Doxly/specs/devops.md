@@ -16,6 +16,15 @@ Per ADR-006 (`decisions.md`), every service runs in Docker, both locally and (fo
 
 Using the `pgvector/pgvector` base image (rather than plain `postgres` + a manual extension install step) keeps the pgvector version pinned and identical across every developer's machine and CI, avoiding the classic "works on my machine" drift for a native-code extension.
 
+### 1.1 Frontend image hardening (`roadmap.md` Phase 17)
+
+`frontend/Dockerfile`'s runtime (`runner`) stage applies two hardening steps beyond the baseline non-root multi-stage build, both verified by actually running the built image, not inferred from reading the Dockerfile:
+
+- **`apk upgrade --no-cache`** patches the base `node:22-alpine` image's own system packages (e.g. libssl/libcrypto) to whatever CVE fixes exist upstream as of build time, rather than freezing at whatever the base image tag was published with.
+- **The base image's bundled global `npm`/`npx` are removed** (`rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx`). The container starts via `node server.js` directly — npm is never invoked at runtime — but `node:22-alpine` ships a full npm install (and npm's own transitive dependencies) regardless. A `docker scout cves` scan of the unpatched image found 16 vulnerabilities (1 critical, 8 high) across 6 packages, every one traced to `/usr/local/lib/node_modules/npm/...`; removing it brought the scan to zero findings across the image's remaining 98 packages. This is the standard fix for this class of finding on Node base images, not a Doxly-specific workaround — re-verify with `docker scout cves` after any base-image bump, since a future Node release could change what's bundled.
+
+The image's `HEALTHCHECK` (`wget --spider` against the app's own root path) targets `127.0.0.1:3000` explicitly, never `localhost:3000` — Alpine's resolver returns the IPv6 loopback (`::1`) for `localhost` first, but `HOSTNAME=0.0.0.0` only binds the IPv4 wildcard, so a `localhost`-based healthcheck connection-refuses even though the server is genuinely up and serving traffic on the mapped port. This was caught by actually running the built image and inspecting `docker inspect`'s health-check log, not by reading the Dockerfile — the same class of bug a real container run catches that static review doesn't.
+
 ## 2. Docker Compose (Local Development)
 
 A single `docker-compose.yml` at the repo root composes all five services described above. Conceptually, it provides:
