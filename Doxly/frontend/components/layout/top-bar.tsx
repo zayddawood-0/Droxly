@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Search, User, Settings, LogOut } from "lucide-react";
@@ -21,17 +22,34 @@ import { isConnectivityError, CONNECTIVITY_ERROR_MESSAGE } from "@/lib/api/error
 
 /**
  * Global top bar, present on every authenticated page (specs/ui-ux.md §0):
- * a command/search trigger and a user menu. Logout (FR-AUTH-006) is wired to
+ * a command/search trigger and a user menu. The search trigger navigates to
+ * Global Search (ui-ux.md §12) and also responds to ⌘K/Ctrl+K from anywhere
+ * in the authenticated shell. Logout (FR-AUTH-006) is wired to
  * the real endpoint. The account menu does not yet show the real signed-in
- * identity — that needs GET /users/me, deferred to the phase that gives
- * Dashboard real session-aware content, per this phase's documented scope
- * boundary (tasks/02-authentication-ui.md). Routes under (dashboard)/(admin)
- * are also not gated on a session yet, for the same reason: no backend
- * exists yet to authenticate against, and gating now would make every
- * existing placeholder route unreachable in dev.
+ * identity (GET /users/me exists as of Phase 15's admin role guard,
+ * lib/api/users.ts's getCurrentUser — but wiring it into this menu is a
+ * Dashboard/session-UX change, not this phase's security scope). Routes
+ * under (dashboard) are also not gated on a session yet, for the same
+ * reason Phase 2 deferred it: no backend exists yet to authenticate
+ * against, and gating now would make every existing placeholder route
+ * unreachable in dev. `/admin/*` is the one exception — role-guarded as of
+ * Phase 15 (components/layout/admin-guard.tsx), since an admin-only area
+ * is a security boundary this phase's scope explicitly covers, unlike the
+ * broader session-gating question for the rest of the app.
  */
 export function TopBar() {
   const router = useRouter();
+
+  useEffect(() => {
+    function handleKeydown(event: KeyboardEvent) {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        router.push("/search");
+      }
+    }
+    window.addEventListener("keydown", handleKeydown);
+    return () => window.removeEventListener("keydown", handleKeydown);
+  }, [router]);
 
   async function handleLogout() {
     try {
@@ -61,6 +79,7 @@ export function TopBar() {
         size="sm"
         className="hidden sm:flex items-center gap-2 text-muted-foreground font-normal"
         aria-label="Open global search"
+        onClick={() => router.push("/search")}
       >
         <Search className="size-4" aria-hidden="true" />
         <span>Search documents…</span>
@@ -73,6 +92,7 @@ export function TopBar() {
         size="icon"
         className="sm:hidden"
         aria-label="Open global search"
+        onClick={() => router.push("/search")}
       >
         <Search className="size-[18px]" aria-hidden="true" />
       </Button>

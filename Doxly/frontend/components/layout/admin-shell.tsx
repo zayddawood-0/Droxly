@@ -6,8 +6,9 @@ import { ShieldAlert, Users, Activity } from "lucide-react";
  * Internal operational tooling shell (specs/ui-ux.md §14) — deliberately NOT
  * the consumer AppSidebar. A left tab set (Users, System Health) with muted,
  * utility-grade chrome so /admin never reads as a "power user" area of the
- * consumer product. Reached only by a role-guarded route (role check wired in
- * Phase 2/15), never linked from the standard sidebar.
+ * consumer product. Only ever rendered by AdminGuard (components/layout/
+ * admin-guard.tsx) once role === "admin" is confirmed — never linked from
+ * the standard sidebar.
  */
 const adminTabs = [
   { href: "/admin/users", label: "Users", icon: Users },

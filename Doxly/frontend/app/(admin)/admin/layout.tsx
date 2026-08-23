@@ -1,8 +1,10 @@
 import type { ReactNode } from "react";
-import { AdminShell } from "@/components/layout/admin-shell";
+import { AdminGuard } from "@/components/layout/admin-guard";
 
-// Role guard (role="admin", specs/security.md §3.1) is wired in Phase 2/15
-// alongside real session data — this layout only establishes the shell.
+// Role guard (role="admin", specs/security.md §3.1) — wired in Phase 15.
+// AdminGuard fetches GET /users/me and only renders AdminShell/children once
+// role === "admin" is confirmed; every other outcome (pending, error, wrong
+// role) renders its own state and never mounts the shell.
 export default function AdminLayout({ children }: { children: ReactNode }) {
-  return <AdminShell>{children}</AdminShell>;
+  return <AdminGuard>{children}</AdminGuard>;
 }

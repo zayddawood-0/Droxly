@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import { PageHeader } from "@/components/layout/page-header";
-import { PhasePlaceholder } from "@/components/layout/phase-placeholder";
+import { AnalyticsView } from "./analytics-view";
 
 export const metadata: Metadata = { title: "Analytics" };
 
@@ -11,10 +12,9 @@ export default function AnalyticsPage() {
         title="Analytics"
         description="What you've processed and asked, over time."
       />
-      <PhasePlaceholder
-        phase="Phase 14 — Analytics"
-        requirements="FR-ANALYTICS-001"
-      />
+      <Suspense fallback={null}>
+        <AnalyticsView />
+      </Suspense>
     </>
   );
 }

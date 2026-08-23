@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/tooltip";
 import type { DocumentStatus } from "@/lib/api/documents";
 
-const STAGE_LABEL: Record<DocumentStatus, string> = {
+export const STAGE_LABEL: Record<DocumentStatus, string> = {
   queued: "Queued",
   extracting: "Extracting",
   chunking: "Chunking",

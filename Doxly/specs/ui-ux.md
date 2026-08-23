@@ -195,9 +195,9 @@ Global elements available from any authenticated page: a command/search trigger 
 - **Interactions:** Period selector (7d/30d/90d) re-fetches chart data.
 - **Loading states:** Skeleton stat cards and chart placeholders on load/period change.
 - **Empty state:** New accounts with no activity show a "Nothing to show yet — your usage will appear here once you start uploading and asking questions" message instead of empty/zeroed charts that look broken.
-- **Error state:** Inline retry per section (a stat-card fetch failure doesn't block the charts from rendering).
+- **Error state:** `GET /analytics/dashboard` (`api.md` §9) is a single request returning every section (stat cards, both time series, most-used features) — there is no per-section endpoint to fail independently. A failure shows one inline retry for the whole dashboard, not a full-page error; it never blocks navigation to the rest of the app.
 - **Success state:** N/A (informational page).
-- **Responsive behavior:** Stat card grid reflows 4→2→1 columns; charts remain legible at mobile width (simplify tick density rather than shrinking illegibly).
+- **Responsive behavior:** Stat card grid (3 cards — `GET /analytics/dashboard`'s three scalar metrics) reflows 3→2→1 columns; charts remain legible at mobile width (simplify tick density rather than shrinking illegibly).
 - **Accessibility:** Charts have a text/table equivalent or accessible summary for screen-reader users, not visual-only data.
 
 ## 14. Settings (`⚙`)

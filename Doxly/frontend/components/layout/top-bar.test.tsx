@@ -47,3 +47,25 @@ describe("TopBar — logout (FR-AUTH-006)", () => {
     await waitFor(() => expect(pushMock).not.toHaveBeenCalled());
   });
 });
+
+describe("TopBar — global search trigger (ui-ux.md §0/§12)", () => {
+  it("navigates to /search when the search button is clicked", async () => {
+    const user = userEvent.setup();
+    render(<TopBar />);
+
+    // Desktop and mobile trigger buttons both render in jsdom simultaneously
+    // (no real CSS media-query filtering) — click the first match.
+    await user.click(screen.getAllByRole("button", { name: "Open global search" })[0]);
+
+    expect(pushMock).toHaveBeenCalledWith("/search");
+  });
+
+  it("navigates to /search on Cmd/Ctrl+K from anywhere in the shell", async () => {
+    const user = userEvent.setup();
+    render(<TopBar />);
+
+    await user.keyboard("{Control>}k{/Control}");
+
+    expect(pushMock).toHaveBeenCalledWith("/search");
+  });
+});

@@ -135,6 +135,19 @@ Per Section 37 of the initialization brief, every open question below has an exp
 - **Consequences:** Every path reference in `skills/frontend.md`'s folder structure (e.g. `app/`, `components/`, `lib/`) is relative to `frontend/`, not the repository root. `docker-compose.yml` and CI workflow paths must scope build contexts and cache keys per-service accordingly.
 - **Status:** Decided.
 
+## ADR-018: Frontend charting library — Recharts (via shadcn's `chart.tsx` primitives)
+
+- **Decision:** `recharts` is the charting library for Analytics' line/bar charts, wrapped through shadcn's standard `ChartContainer`/`ChartTooltip`/`ChartLegend` primitives (`components/ui/chart.tsx`, added via the shadcn CLI — consistent with every other `components/ui/*` primitive in this codebase) rather than a hand-rolled SVG chart or a heavier dashboard-chart package.
+- **Context:** Flagged as an open decision in the approved frontend implementation plan ("a minimal charting library for Analytics — 'flat, no 3D/gradient decoration' is specified; the library is not") and left unresolved through Phases 1–13 because no phase needed it until Analytics (Phase 14). `ui-ux.md` §13 requires "minimal chart components (line/bar — flat, no 3D/gradient decoration, consistent with brand restraint)."
+- **Alternatives considered:**
+  - **visx** (Airbnb) — lower-level primitives, smaller core bundle, but requires assembling axes/tooltips/grids by hand for even a simple line/bar chart; more implementation surface than two small charts justify.
+  - **Nivo** — batteries-included and visually rich, but its defaults lean toward gradients/decoration that would need overriding throughout to satisfy the "flat, no 3D/gradient" requirement — fighting the library rather than using it.
+  - **uPlot / lightweight-charts** (canvas-based) — excellent performance and the smallest bundle, but canvas rendering means building the accessible text/table fallback `ui-ux.md` §13 requires entirely from scratch, with no DOM nodes for assistive tech to read.
+  - **Hand-rolled inline SVG** — zero dependency, but reimplements axis ticks, responsive sizing, and tooltip positioning that a maintained library already solves correctly; not justified by two chart types.
+- **Reason:** Recharts is SVG-based (real DOM nodes, easier to pair with an accessible fallback), themes entirely through CSS custom properties that map directly onto this project's existing design tokens (`--color-primary`, `--color-muted-foreground`, etc. — no gradient/3D defaults to strip out), and shadcn ships an official, already-Tailwind-integrated wrapper (`chart.tsx`) with no Radix dependency, so it drops into this Base UI-based project with zero friction alongside every other `components/ui/*` primitive.
+- **Consequences:** `recharts` (`^3.8.0`) is a new frontend dependency (`package.json`). `components/domain/analytics/{line-chart,bar-chart}.tsx` wrap `ChartContainer` with Doxly-specific defaults (flat lines/bars, no gradients, tick-density simplification at mobile width) rather than exposing raw Recharts props to page code, keeping the "flat, no 3D/gradient decoration" rule enforced in one place instead of re-applied at every call site.
+- **Status:** Decided.
+
 ---
 
 ## Open Questions (assumptions made to unblock the spec — flagged for product/business confirmation)
@@ -203,6 +216,13 @@ Per Section 37 of the initialization brief, every open question below has an exp
 - **Question:** Should documents be shareable across users (teams) at launch?
 - **Recommended default:** No — individual accounts only for MVP (ADR-013). Documented as a Post-MVP roadmap phase.
 - **Status:** **Assumption**.
+
+### OQ-12 — Nonce-based CSP `script-src` for the frontend
+- **Question:** Can the frontend's `script-src` directive drop `'unsafe-inline'` in favor of Next.js 16's per-request Proxy-nonce pattern (`security.md` §11.3)?
+- **What was tried:** Implemented during Phase 15 (Security Hardening) as `proxy.ts` (Next.js 16's renamed `middleware.ts` convention), generating a fresh nonce per request and setting `script-src 'self' 'nonce-<value>' 'strict-dynamic'`. Verified working correctly under `next dev` (confirmed via a real browser: no CSP console violations, hydration succeeds, the full E2E suite passes against the dev server). Failed under this project's actual production configuration (`output: "standalone"` + Turbopack, `next build && next start`, the exact setup `playwright.config.ts`'s `webServer` and `Dockerfile` both use): several of Next.js's own static `<script src>` tags in the production HTML response are not nonce-stamped, so the nonce'd policy blocks the app's own hydration scripts — the app renders its server shell but never becomes interactive. Reproduced consistently across multiple clean rebuilds, not a transient flake.
+- **Recommended default:** `script-src 'self' 'unsafe-inline'` (and `style-src` identically, needed regardless for `components/ui/chart.tsx`'s injected color-token `<style>` tag, ADR-018) until Next.js's Proxy-nonce auto-stamping is confirmed reliable for this exact build configuration. The residual risk is low today: the XSS audit performed alongside this decision found exactly one `dangerouslySetInnerHTML` in the entire frontend, and its content is always static app config, never document- or user-derived — there is no known path today for an attacker to get their own inline script onto the page even with this directive relaxed.
+- **Why:** Shipping a CSP that breaks the app in production is a worse outcome than a real, slightly-less-strict CSP that actually protects the site (blocks all external script/style/image/font/connect origins, framing, and plugin objects) — `'unsafe-inline'` on `script-src` is the one directive not at its strictest possible value, not a broadly weakened policy.
+- **Status:** **Assumption** — revisit when upgrading Next.js, and re-run this same before/after production-build verification before attempting the nonce approach again.
 
 ---
 
