@@ -8,9 +8,16 @@ from app.core.dependencies import get_current_user, get_db_session
 from app.core.email import EmailProvider, get_email_provider
 from app.core.rate_limit import rate_limit_general
 from app.core.security import AccessTokenClaims
+from app.repositories.document_repository import DocumentRepository
 from app.repositories.observability_repository import AiRequestRepository
-from app.repositories.user_repository import UserRepository
-from app.schemas.user import UsageResponse, UserResponse, UserUpdateRequest
+from app.repositories.user_repository import RefreshTokenRepository, UserRepository
+from app.schemas.user import (
+    AccountDeletionRequest,
+    AccountDeletionResponse,
+    UsageResponse,
+    UserResponse,
+    UserUpdateRequest,
+)
 from app.services.user_service import UserService
 
 router = APIRouter(
@@ -22,7 +29,13 @@ def get_user_service(
     db: AsyncSession = Depends(get_db_session),
     email_provider: EmailProvider = Depends(get_email_provider),
 ) -> UserService:
-    return UserService(UserRepository(db), AiRequestRepository(db), email_provider)
+    return UserService(
+        UserRepository(db),
+        AiRequestRepository(db),
+        email_provider,
+        DocumentRepository(db),
+        RefreshTokenRepository(db),
+    )
 
 
 def _to_response(user) -> UserResponse:
@@ -34,6 +47,7 @@ def _to_response(user) -> UserResponse:
         role=user.role,
         plan=user.plan,
         email_verified=user.email_verified_at is not None,
+        storage_used_bytes=user.storage_used_bytes,
         created_at=user.created_at,
     )
 
@@ -69,3 +83,20 @@ async def get_usage(
 ) -> UsageResponse:
     usage = await service.get_usage(current_user.user_id)
     return UsageResponse(**usage)
+
+
+@router.delete(
+    "/me",
+    response_model=AccountDeletionResponse,
+    status_code=202,
+    dependencies=[Depends(verify_csrf)],
+)
+async def delete_me(
+    body: AccountDeletionRequest,
+    current_user: AccessTokenClaims = Depends(get_current_user),
+    service: UserService = Depends(get_user_service),
+) -> AccountDeletionResponse:
+    await service.delete_account(
+        current_user.user_id, confirmation_email=body.confirmation_email
+    )
+    return AccountDeletionResponse()

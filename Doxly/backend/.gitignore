@@ -8,3 +8,8 @@ __pycache__/
 # env files — .env.example is committed, every other .env* variant is not
 .env*
 !.env.example
+
+# R2 — LocalFilesystemStorageProvider's dev/test upload target
+# (core/storage.py); never committed, same category as any other local
+# runtime data.
+.local-storage/

@@ -74,12 +74,25 @@ class PasswordResetConfirmRequest(BaseModel):
 
 
 class SessionResponse(BaseModel):
+    """
+    api.md §1's exact `GET /auth/sessions` item shape — `expires_at` and
+    `is_current` added in the R1 remediation pass (audit finding S2; both
+    were missing from the original implementation). `is_current` is a
+    computed field the ORM object itself has no attribute for, so this
+    schema is always constructed explicitly by the router (which knows
+    which refresh-token cookie is active for the current request), never
+    via `from_attributes`/`model_validate` on a bare `RefreshToken` row —
+    `model_config` below is kept only for `ip_address`'s pre-validator.
+    """
+
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
     device_label: str | None
     ip_address: str | None
     created_at: datetime
+    expires_at: datetime
+    is_current: bool
 
     @field_validator("ip_address", mode="before")
     @classmethod
@@ -88,3 +101,10 @@ class SessionResponse(BaseModel):
         # IPv6Address objects, not str — stringified here so the response
         # schema's declared str type actually matches what it serializes.
         return None if value is None else str(value)
+
+
+class SessionsListResponse(BaseModel):
+    """api.md §1 — `GET /auth/sessions` wraps its items in `{"items": [...]}`,
+    not a bare array (R1 remediation, audit finding S2)."""
+
+    items: list[SessionResponse]

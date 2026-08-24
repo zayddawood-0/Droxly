@@ -188,6 +188,39 @@ async def rate_limit_ai(
         raise DailyAiLimitExceededError(seconds_until_midnight_utc)
 
 
+RESEND_COOLDOWN_SECONDS = 300
+
+
+async def check_resend_cooldown(user_id: uuid.UUID) -> None:
+    """
+    api.md's `POST /auth/verify-email/resend` requirement: "Rate-limited to
+    1 per 5 minutes per account to prevent email-bombing (independent of
+    the general per-minute limit)." (R1 remediation, audit finding S6.)
+
+    A plain Redis `SET NX EX` cooldown, not a TokenBucket — there is no
+    "burst then refill" shape to this requirement, only "at most once per
+    window," which `SET ... NX` (set only if not already present) with an
+    expiry gives atomically in one round trip, with no separate read-then-
+    write race window. Keyed by account (user_id) only, per api.md's own
+    "per account" wording — deliberately not account+IP like AuthThrottle,
+    since this isn't a brute-force-guessing defense, it's a spam/cost
+    control on an authenticated user's own account.
+    """
+    key = f"rl:resend_cooldown:{user_id}"
+    try:
+        was_set = await redis_client.set(key, "1", nx=True, ex=RESEND_COOLDOWN_SECONDS)
+    except redis.RedisError:
+        logger.warning(
+            "rate_limit.redis_unavailable", extra={"key_prefix": "resend_cooldown"}
+        )
+        return
+    if not was_set:
+        raise RateLimitedError(
+            RESEND_COOLDOWN_SECONDS,
+            message="Please wait before requesting another verification email.",
+        )
+
+
 class AuthThrottle:
     """
     security.md §2.4 — progressive backoff after 5 failures in a 10-minute

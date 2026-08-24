@@ -25,6 +25,44 @@ DATABASE_URL before running this suite.
 """
 
 
+@pytest_asyncio.fixture(autouse=True)
+async def _reset_rate_limit_state() -> AsyncIterator[None]:
+    """
+    Found while writing the R1 remediation pass's new throttle tests
+    (audit findings S5/S6): unlike db_session's Postgres SAVEPOINT rollback,
+    core/rate_limit.py's Redis-backed counters have no per-test isolation
+    of their own — they're real, persistent state in the same Redis
+    instance across the whole test session (and across separate `pytest`
+    invocations, since nothing ever expires them faster than their own
+    TTL). Tests that use fresh `uuid4()` identifiers (test_rate_limit.py)
+    were never affected, but new tests using fixed, human-readable emails
+    for readability (test_auth_api.py's throttle/audit-log tests) silently
+    accumulated AuthThrottle/resend-cooldown counts across repeated runs
+    until a later run's 6th call unexpectedly saw an already-primed
+    counter and 429'd. Deleting only the `rl:*` keys this app itself
+    writes — not a blanket FLUSHDB — keeps this scoped to what these tests
+    actually touch.
+    """
+    import redis.asyncio as redis_lib
+
+    from app.core.rate_limit import redis_client
+
+    async def _clear() -> None:
+        try:
+            async for key in redis_client.scan_iter(match="rl:*"):
+                await redis_client.delete(key)
+        except redis_lib.RedisError:
+            # Same fail-open posture as the app code itself (decisions.md
+            # ADR-021): tests that never touched rate limiting before this
+            # fixture was added (e.g. test_security.py, test_chunking.py)
+            # shouldn't newly require Redis just to run.
+            pass
+
+    await _clear()
+    yield
+    await _clear()
+
+
 @pytest_asyncio.fixture
 async def db_session() -> AsyncIterator[AsyncSession]:
     async with engine.connect() as conn:
@@ -79,3 +117,28 @@ def auth_cookie_headers(user_id, role: str = "user") -> dict[str, str]:
 
     token = create_access_token(user_id, role)
     return {"Cookie": f"access_token={token}"}
+
+
+async def make_user(
+    db_session: AsyncSession, *, email: str | None = None, plan: str = "free"
+):
+    """
+    tasks/remediation-plan.md R2 — creates a User row directly (bypassing
+    register/login) for tests that need an owning user but aren't
+    themselves testing the auth flow, mirroring R1's own
+    test_auth_api.py::test_login_oauth_only_account_rejects_password
+    pattern rather than inventing a new one.
+    """
+    import uuid
+
+    from app.models import User
+
+    user = User(
+        email=email or f"{uuid.uuid4()}@example.com",
+        display_name="Test User",
+        password_hash="not-a-real-hash",
+        plan=plan,
+    )
+    db_session.add(user)
+    await db_session.flush()
+    return user

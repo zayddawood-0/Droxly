@@ -4,25 +4,38 @@ require_admin (skills/backend.md §15's folder plan; §4.3 of the remediation
 plan corrects Revision 1's omission of require_admin from this file).
 """
 
-from collections.abc import AsyncIterator
-
 from fastapi import Cookie, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db_session as _get_db_session
+from app.core.database import get_db_session
 from app.core.security import AccessTokenClaims, InvalidTokenError, decode_access_token
 from app.errors import ForbiddenError, UnauthorizedError
 
+# Re-exported (not re-implemented) from core/database.py so every router/
+# service imports session provisioning from the same `app.core.dependencies`
+# module as get_current_user/require_admin, per skills/backend.md §15's
+# folder plan. **Fixed during R1's compliance-remediation pass**: this used
+# to be a *wrapping* generator (`async for session in _get_db_session():
+# yield session`) around the real one — which looks equivalent but silently
+# breaks exception propagation. FastAPI throws a raised exception into a
+# yield-based dependency via `.athrow()` at that dependency's own `yield`
+# point; when the `yield` lives inside a wrapper's `async for` loop (not
+# inside the real generator itself), the exception surfaces at the
+# *wrapper's* yield and never reaches the inner generator's try/except at
+# all — so core/database.py's commit-on-DoxlyError / rollback-on-error
+# logic (this same remediation pass, S7-adjacent) never ran, silently
+# discarding the audit_logs row S7 added. Confirmed live: a real server run
+# showed zero audit_logs rows for a failed login even after that fix, and
+# only stopped being empty once the double-wrapping was removed here — a
+# straight re-export doesn't have this problem, since it's the exact same
+# function object/generator FastAPI resolves and drives directly.
+__all__ = [
+    "get_current_user",
+    "get_current_user_optional",
+    "get_db_session",
+    "require_admin",
+]
+
 ACCESS_TOKEN_COOKIE_NAME = "access_token"
-
-
-async def get_db_session() -> AsyncIterator[AsyncSession]:
-    """Re-exported from core/database.py so every router/service imports
-    session provisioning from the same `app.core.dependencies` module as
-    get_current_user/require_admin, per skills/backend.md §15's folder plan
-    — core/database.py's own docstring already anticipated this."""
-    async for session in _get_db_session():
-        yield session
 
 
 def _decode_cookie(access_token: str | None) -> AccessTokenClaims | None:

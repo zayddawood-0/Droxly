@@ -10,7 +10,11 @@ import uuid
 
 import pytest
 
-from app.core.rate_limit import _check_token_bucket, auth_throttle
+from app.core.rate_limit import (
+    _check_token_bucket,
+    auth_throttle,
+    check_resend_cooldown,
+)
 from app.errors import RateLimitedError
 
 
@@ -96,3 +100,22 @@ async def test_auth_throttle_reset_clears_the_counter():
 
     await auth_throttle.reset(identifier, ip)
     await auth_throttle.check(identifier, ip)  # must not raise
+
+
+async def test_resend_cooldown_allows_first_call():
+    """R1 remediation, audit finding S6."""
+    await check_resend_cooldown(uuid.uuid4())  # must not raise
+
+
+async def test_resend_cooldown_blocks_second_call_within_window():
+    user_id = uuid.uuid4()
+    await check_resend_cooldown(user_id)
+
+    with pytest.raises(RateLimitedError):
+        await check_resend_cooldown(user_id)
+
+
+async def test_resend_cooldown_is_per_account_not_shared():
+    """Two different accounts never share a cooldown bucket."""
+    await check_resend_cooldown(uuid.uuid4())
+    await check_resend_cooldown(uuid.uuid4())  # must not raise

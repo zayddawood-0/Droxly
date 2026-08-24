@@ -8,6 +8,8 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field
 # decisions.md OQ-07 — Free: 100 MB / 10 documents. Pro: 5 GB / unlimited.
 STORAGE_QUOTA_BYTES_FREE = 100 * 1024 * 1024
 STORAGE_QUOTA_BYTES_PRO = 5 * 1024 * 1024 * 1024
+DOCUMENT_QUOTA_FREE = 10
+DOCUMENT_QUOTA_PRO = None  # unlimited (OQ-07)
 
 # api.md §0.7 — AI daily cap by plan, mirrored from core/rate_limit.py's
 # same constants so /users/me/usage reports the identical numbers the rate
@@ -34,6 +36,7 @@ class UserResponse(BaseModel):
     role: str
     plan: str
     email_verified: bool
+    storage_used_bytes: int
     created_at: datetime
 
 
@@ -47,5 +50,20 @@ class UsageResponse(BaseModel):
     plan: str
     storage_used_bytes: int
     storage_quota_bytes: int
+    document_count: int
+    document_quota: int | None
     ai_requests_today: int
     ai_requests_daily_limit: int
+
+
+class AccountDeletionRequest(BaseModel):
+    """api.md §2 DELETE /users/me — a typed-confirmation pattern
+    (tasks/remediation-plan.md R2, the FR-USER-002 half owned by this
+    router per R1 §5.1's cascade contract)."""
+
+    confirmation_email: str
+
+
+class AccountDeletionResponse(BaseModel):
+    status: str = "pending_deletion"
+    purge_scheduled_after_days: int = 30

@@ -10,13 +10,14 @@ from app.core.config import settings
 from app.core.csrf import generate_csrf_token, set_csrf_cookie, verify_csrf
 from app.core.dependencies import get_current_user, get_db_session
 from app.core.email import EmailProvider, get_email_provider
-from app.core.rate_limit import auth_throttle, rate_limit_general
+from app.core.rate_limit import auth_throttle, check_resend_cooldown, rate_limit_general
 from app.core.security import (
     GOOGLE_AUTHORIZE_URL,
     GOOGLE_TOKEN_URL,
     GOOGLE_USERINFO_URL,
     AccessTokenClaims,
     google_oauth_client,
+    hash_refresh_token,
 )
 from app.errors import (
     NotFoundError,
@@ -34,6 +35,7 @@ from app.schemas.auth import (
     RegisterRequest,
     RegisterResponse,
     SessionResponse,
+    SessionsListResponse,
     VerifyEmailRequest,
     VerifyEmailResponse,
 )
@@ -103,8 +105,21 @@ def _clear_session_cookies(response: Response) -> None:
 
 @router.post("/register", response_model=RegisterResponse, status_code=201)
 async def register(
-    body: RegisterRequest, service: AuthService = Depends(get_auth_service)
+    body: RegisterRequest,
+    request: Request,
+    service: AuthService = Depends(get_auth_service),
 ) -> RegisterResponse:
+    # security.md §2.4 — registration shares login's account+IP throttle
+    # treatment ("equally valuable targets for enumeration and abuse").
+    # Every attempt counts, not just failures: unlike login, a repeat
+    # registration attempt against the same email+IP is itself the
+    # abuse/enumeration signal this endpoint needs protecting against,
+    # regardless of whether that particular attempt succeeds (R1
+    # remediation, audit finding S5).
+    ip = _client_ip(request) or "unknown"
+    await auth_throttle.check(body.email, ip)
+    await auth_throttle.record_failure(body.email, ip)
+
     user = await service.register(
         email=body.email, password=body.password, display_name=body.display_name
     )
@@ -131,6 +146,9 @@ async def resend_verification(
     current_user: AccessTokenClaims = Depends(get_current_user),
     service: AuthService = Depends(get_auth_service),
 ) -> None:
+    # api.md §1 — "Rate-limited to 1 per 5 minutes per account ... independent
+    # of the general per-minute limit" (R1 remediation, audit finding S6).
+    await check_resend_cooldown(current_user.user_id)
     await service.resend_verification(current_user.user_id)
 
 
@@ -274,8 +292,19 @@ async def logout(
 
 @router.post("/password-reset/request", status_code=202)
 async def password_reset_request(
-    body: PasswordResetRequestRequest, service: AuthService = Depends(get_auth_service)
+    body: PasswordResetRequestRequest,
+    request: Request,
+    service: AuthService = Depends(get_auth_service),
 ) -> None:
+    # security.md §2.4 — same account+IP throttle treatment as login/
+    # register (R1 remediation, audit finding S5). The endpoint's own
+    # "always 202" behavior toward the caller is unchanged — the throttle
+    # only affects how many attempts are accepted before a 429, never
+    # which cases return 202 vs not.
+    ip = _client_ip(request) or "unknown"
+    await auth_throttle.check(body.email, ip)
+    await auth_throttle.record_failure(body.email, ip)
+
     await service.request_password_reset(body.email)
 
 
@@ -289,13 +318,37 @@ async def password_reset_confirm(
     return {}
 
 
-@router.get("/sessions", response_model=list[SessionResponse])
+@router.get("/sessions", response_model=SessionsListResponse)
 async def list_sessions(
+    request: Request,
     current_user: AccessTokenClaims = Depends(get_current_user),
     service: AuthService = Depends(get_auth_service),
-) -> list[SessionResponse]:
+) -> SessionsListResponse:
+    """
+    api.md §1 — wraps items in `{"items": [...]}` and includes `is_current`
+    (R1 remediation, audit finding S2). `is_current` is computed by hashing
+    the request's own refresh_token cookie the same way AuthService already
+    hashes one for lookup (core/security.py's hash_refresh_token) and
+    comparing it against each session row's stored hash — never by
+    comparing raw token values, matching how every other refresh-token
+    lookup in this codebase already works.
+    """
     sessions = await service.list_sessions(current_user.user_id)
-    return [SessionResponse.model_validate(s) for s in sessions]
+    current_raw = request.cookies.get(REFRESH_TOKEN_COOKIE)
+    current_hash = hash_refresh_token(current_raw) if current_raw else None
+
+    items = [
+        SessionResponse(
+            id=s.id,
+            device_label=s.device_label,
+            ip_address=s.ip_address,
+            created_at=s.created_at,
+            expires_at=s.expires_at,
+            is_current=(current_hash is not None and s.token_hash == current_hash),
+        )
+        for s in sessions
+    ]
+    return SessionsListResponse(items=items)
 
 
 @router.delete(

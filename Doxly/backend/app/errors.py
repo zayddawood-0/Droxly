@@ -53,6 +53,30 @@ class ConflictError(DoxlyError):
     error_code = "conflict"
 
 
+class RequestValidationFailedError(DoxlyError):
+    """
+    422 — request body/query fails Pydantic validation (api.md §0.5's
+    `fields` case). R1 remediation (audit finding S1): wraps FastAPI's own
+    RequestValidationError so every 422 goes through the same single
+    envelope-construction path as every other DoxlyError, rather than
+    shipping FastAPI's default `{"detail": [...]}` shape unchanged
+    (main.py's RequestValidationError handler does the conversion). Named
+    distinctly from a hypothetical *domain*-level "ValidationError" some
+    future service-layer check might raise (skills/backend.md §10 lists
+    `ValidationError` as its own example, `domain-level, distinct from
+    Pydantic's own request-validation errors`) — this class is specifically
+    the Pydantic-boundary one.
+    """
+
+    status_code = 422
+    error_code = "validation_error"
+    default_message = "The request could not be validated."
+
+    def __init__(self, fields: dict[str, str]) -> None:
+        super().__init__()
+        self.fields = fields
+
+
 class RateLimitedError(DoxlyError):
     """429 — general or AI-tier rate limit exceeded (api.md §0.7). `retry_after_seconds`
     is read by the router to set the Retry-After response header."""
@@ -134,6 +158,84 @@ class OAuthNotConfiguredError(DoxlyError):
     status_code = 503
     error_code = "oauth_not_configured"
     default_message = "Google sign-in is not available right now."
+
+
+# --- R2 (tasks/remediation-plan.md) — documents ---
+
+
+class QuotaExceededError(DoxlyError):
+    """402 — api.md §3 /documents/presign: "the file would exceed storage
+    quota or the per-file size cap" — one shared code for both cases, per
+    api.md's own text."""
+
+    status_code = 402
+    error_code = "quota_exceeded"
+    default_message = "This upload would exceed your storage quota."
+
+
+class UnsupportedMimeTypeError(DoxlyError):
+    """
+    422 — api.md names this as a *specific* error code, distinct from a
+    generic validation failure. Deliberately raised from the service layer
+    rather than a Pydantic field_validator on PresignRequest.mime_type: per
+    skills/backend.md §9, "if the check can be expressed purely from the
+    shape of the request body ... it belongs in a Pydantic schema" would
+    normally put an enum-membership check like this one in Pydantic, but
+    doing so would produce R1's generic `validation_error` code (S1's
+    RequestValidationFailedError) — api.md's own contract explicitly wants
+    `unsupported_mime_type` here, which only a raised DoxlyError subclass
+    can produce. A deliberate, documented exception to the usual heuristic.
+    """
+
+    status_code = 422
+    error_code = "unsupported_mime_type"
+    default_message = "This file type is not supported."
+
+
+class UploadMismatchError(DoxlyError):
+    """400 — api.md's POST /documents/{id}/confirm: the stored object's
+    real size/MIME doesn't match what was declared at presign time
+    (NFR-SEC-003)."""
+
+    status_code = 400
+    error_code = "upload_mismatch"
+    default_message = "The uploaded file doesn't match what was declared."
+
+
+class NotReadyError(DoxlyError):
+    """409 — api.md's GET /documents/{id}/content: the document hasn't
+    finished processing yet."""
+
+    status_code = 409
+    error_code = "not_ready"
+    default_message = "This document isn't ready yet."
+
+
+class InvalidStatusError(DoxlyError):
+    """409 — api.md's POST /documents/{id}/reprocess: only a `failed`
+    document may be reprocessed via this route."""
+
+    status_code = 409
+    error_code = "invalid_status"
+    default_message = "This action isn't valid for the document's current status."
+
+
+class TagAlreadyExistsError(DoxlyError):
+    """409 — api.md's POST /tags: (user_id, name) already exists."""
+
+    status_code = 409
+    error_code = "tag_already_exists"
+    default_message = "A tag with this name already exists."
+
+
+class ConfirmationMismatchError(DoxlyError):
+    """422 — api.md's DELETE /users/me: confirmation_email must exactly
+    match the caller's own current email (FR-USER-002's typed-confirmation
+    pattern for a destructive, irreversible action)."""
+
+    status_code = 422
+    error_code = "confirmation_mismatch"
+    default_message = "The confirmation email doesn't match your account."
 
 
 class EmptyDocumentError(DoxlyError):

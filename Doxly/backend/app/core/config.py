@@ -70,5 +70,27 @@ class Settings(BaseSettings):
     smtp_username: str | None = None
     smtp_password: str | None = None
 
+    # --- R2 (tasks/remediation-plan.md) — document storage ---
+
+    # decisions.md ADR-009: StorageProvider is mandatory, provider choice is
+    # open (OQ-04, default recommendation Vercel Blob). "local" (a real,
+    # working filesystem-backed implementation — not a mock) is the active
+    # default until real cloud storage credentials are supplied, matching
+    # llm_provider/embedding_provider/email_provider's identical "fake/local
+    # by default" pattern. Documented as decisions.md ADR-022.
+    storage_provider: str = "local"
+    # Where LocalFilesystemStorageProvider writes uploaded bytes — never
+    # committed, gitignored like any other local runtime data.
+    storage_local_dir: str = "./.local-storage"
+    storage_presigned_url_expires_in_seconds: int = 900
+    # FastAPI's own externally-reachable origin — needed only to construct
+    # LocalFilesystemStorageProvider's presigned URLs, which (per ADR-009)
+    # must point directly at wherever bytes get received, never through the
+    # Next.js BFF (deployment.md §7's "the actual file bytes never transit
+    # Vercel or FastAPI" — the BFF specifically). Distinct from
+    # frontend_base_url, which is the Next.js origin and would be the wrong
+    # target for a direct-upload URL even in local dev.
+    backend_public_base_url: str = "http://localhost:8000"
+
 
 settings = Settings()

@@ -117,10 +117,23 @@ class AuthService:
             or user.password_hash is None
             or not verify_password(password, user.password_hash)
         ):
-            if user is not None:
-                await self.audit_log_repo.log(
-                    user_id=user.id, action="login_failed", ip_address=ip_address
-                )
+            # security.md §2.4 — "every login attempt, success or failure,
+            # is written to audit_logs," with no carve-out for unknown
+            # emails. audit_logs.user_id is nullable for exactly this case
+            # (system/unattributable events); the attempted email is
+            # recorded in metadata_json — non-sensitive operational
+            # metadata identifying WHAT was targeted, the same category as
+            # document_deleted's document_id (security.md §12), not a
+            # credential or content value — so enumeration/credential-
+            # stuffing patterns against nonexistent accounts remain visible
+            # to an admin, which was silently lost before this fix (R1
+            # remediation, audit finding S7).
+            await self.audit_log_repo.log(
+                user_id=user.id if user is not None else None,
+                action="login_failed",
+                ip_address=ip_address,
+                metadata_json=None if user is not None else {"attempted_email": email},
+            )
             raise InvalidCredentialsError()
 
         if user.status == "suspended":

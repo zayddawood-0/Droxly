@@ -6,13 +6,16 @@ from datetime import UTC, datetime
 from app.core.config import settings
 from app.core.email import EmailProvider
 from app.core.security import create_action_token
-from app.errors import NotFoundError
+from app.errors import ConfirmationMismatchError, NotFoundError
 from app.models import User
+from app.repositories.document_repository import DocumentRepository
 from app.repositories.observability_repository import AiRequestRepository
-from app.repositories.user_repository import UserRepository
+from app.repositories.user_repository import RefreshTokenRepository, UserRepository
 from app.schemas.user import (
     AI_DAILY_CAP_FREE,
     AI_DAILY_CAP_PRO,
+    DOCUMENT_QUOTA_FREE,
+    DOCUMENT_QUOTA_PRO,
     STORAGE_QUOTA_BYTES_FREE,
     STORAGE_QUOTA_BYTES_PRO,
 )
@@ -25,10 +28,14 @@ class UserService:
         user_repo: UserRepository,
         ai_request_repo: AiRequestRepository,
         email_provider: EmailProvider,
+        document_repo: DocumentRepository,
+        refresh_token_repo: RefreshTokenRepository,
     ) -> None:
         self.user_repo = user_repo
         self.ai_request_repo = ai_request_repo
         self.email_provider = email_provider
+        self.document_repo = document_repo
+        self.refresh_token_repo = refresh_token_repo
 
     async def get_profile(self, user_id: uuid.UUID) -> User:
         user = await self.user_repo.get_by_id(user_id)
@@ -85,6 +92,9 @@ class UserService:
             hour=0, minute=0, second=0, microsecond=0
         )
         ai_requests_today = await self.ai_request_repo.count_since(user_id, today_start)
+        # R2 lands this real count, replacing R1's documented `0` placeholder
+        # (remediation-plan.md R1 §4's audit finding S4 note).
+        document_count = await self.document_repo.count_for_user(user_id)
 
         return {
             "plan": user.plan,
@@ -92,8 +102,33 @@ class UserService:
             "storage_quota_bytes": (
                 STORAGE_QUOTA_BYTES_PRO if is_pro else STORAGE_QUOTA_BYTES_FREE
             ),
+            "document_count": document_count,
+            "document_quota": DOCUMENT_QUOTA_PRO if is_pro else DOCUMENT_QUOTA_FREE,
             "ai_requests_today": ai_requests_today,
             "ai_requests_daily_limit": (
                 AI_DAILY_CAP_PRO if is_pro else AI_DAILY_CAP_FREE
             ),
         }
+
+    async def delete_account(
+        self, user_id: uuid.UUID, *, confirmation_email: str
+    ) -> None:
+        """
+        FR-USER-002 — api.md's DELETE /users/me. Immediate side effects
+        only (soft-mark + revoke sessions); the "queues the 30-day
+        hard-purge background job" clause is a documented, honest gap
+        pending R3's RQ worker/queue infrastructure (roadmap.md Phase 5/8,
+        not yet built) — remediation-plan.md R1 §5.1 already flags this:
+        "R2 can implement and test the document half of this cascade
+        immediately," which DocumentService.purge_account_data /
+        DocumentRepository.purge_for_user provide as a callable, tested
+        method, not yet wired to an actual scheduler.
+        """
+        user = await self.user_repo.get_by_id(user_id)
+        if user is None:
+            raise NotFoundError()
+        if confirmation_email != user.email:
+            raise ConfirmationMismatchError()
+
+        await self.user_repo.update(user_id, status="pending_deletion")
+        await self.refresh_token_repo.revoke_all_for_user(user_id)

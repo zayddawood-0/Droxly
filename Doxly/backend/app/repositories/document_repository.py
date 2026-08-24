@@ -1,16 +1,129 @@
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
-from sqlalchemy import delete, select
+from sqlalchemy import ColumnElement, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Document, DocumentChunk, DocumentTag, Tag
 from app.repositories.base import TenantScopedRepository
 
+_SORT_COLUMNS: dict[str, ColumnElement] = {
+    "created_at_desc": Document.created_at.desc(),
+    "created_at_asc": Document.created_at.asc(),
+    "name_asc": Document.file_name.asc(),
+    "size_desc": Document.size_bytes.desc(),
+}
+
 
 class DocumentRepository(TenantScopedRepository[Document]):
     model = Document
+
+    async def get(self, user_id: uuid.UUID, id: uuid.UUID) -> Document | None:
+        """
+        Overrides the generic base — skills/backend.md §4: "soft-deletion
+        ... applied inside the repository by default, not left to every
+        call site to remember." A soft-deleted document must 404 exactly
+        like one owned by another user (FR-DOC-005's "disappears from all
+        queries immediately"), so this is the one place that guarantee is
+        enforced for every caller (get/update/delete-attempt) at once.
+        """
+        result = await self.session.execute(
+            select(Document).where(
+                Document.id == id,
+                Document.user_id == user_id,
+                Document.deleted_at.is_(None),
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def list_paginated(
+        self,
+        user_id: uuid.UUID,
+        *,
+        limit: int,
+        offset: int,
+        status: str | None = None,
+        tag_id: uuid.UUID | None = None,
+        mime_type: str | None = None,
+        sort: str = "created_at_desc",
+    ) -> tuple[Sequence[Document], int]:
+        """FR-DOC-002 — api.md §3's exact filter/sort surface. Returns
+        (page, total) so the router can build §0.6's pagination envelope
+        without a second round trip for the count."""
+        base_filters = [Document.user_id == user_id, Document.deleted_at.is_(None)]
+        if status is not None:
+            base_filters.append(Document.status == status)
+        if mime_type is not None:
+            base_filters.append(Document.mime_type == mime_type)
+
+        stmt = select(Document).where(*base_filters)
+        count_stmt = select(func.count()).select_from(Document).where(*base_filters)
+        if tag_id is not None:
+            stmt = stmt.join(DocumentTag, DocumentTag.document_id == Document.id).where(
+                DocumentTag.tag_id == tag_id
+            )
+            count_stmt = count_stmt.join(
+                DocumentTag, DocumentTag.document_id == Document.id
+            ).where(DocumentTag.tag_id == tag_id)
+
+        stmt = stmt.order_by(_SORT_COLUMNS[sort]).limit(limit).offset(offset)
+
+        items = (await self.session.execute(stmt)).scalars().all()
+        total = (await self.session.execute(count_stmt)).scalar_one()
+        return items, total
+
+    async def count_for_user(self, user_id: uuid.UUID) -> int:
+        """FR-USER-003's usage endpoint (R1) — replaces the hardcoded 0
+        R1's own remediation left as a documented placeholder pending R2."""
+        result = await self.session.execute(
+            select(func.count())
+            .select_from(Document)
+            .where(Document.user_id == user_id, Document.deleted_at.is_(None))
+        )
+        return result.scalar_one()
+
+    async def soft_delete(self, user_id: uuid.UUID, id: uuid.UUID) -> Document | None:
+        """FR-DOC-005 — the user-facing delete. Deliberately NOT the base
+        class's `delete()` (a hard DELETE): the row (and its storage
+        object/chunks) survive until the retention-window purge job runs,
+        per privacy.md — only immediate list/search/retrieval visibility
+        changes now."""
+        document = await self.get(user_id, id)
+        if document is None:
+            return None
+        document.deleted_at = datetime.now(UTC)
+        await self.session.flush()
+        return document
+
+    async def purge_for_user(self, user_id: uuid.UUID) -> list[str]:
+        """
+        R1 §5.1's cascade contract — FR-USER-002/FR-DOC-005's actual
+        hard-delete: removes every document row for this user (chunks
+        cascade via ON DELETE CASCADE, database.md §3.4). Returns the
+        purged rows' storage_keys so the caller (DocumentService, per
+        skills/backend.md's repository/service split — this method only
+        knows about rows, never calls out to StorageProvider itself) can
+        delete the corresponding storage objects.
+
+        Callable and tested directly today; **not yet invoked by any
+        scheduled job** — the actual "30 days after DELETE /users/me"
+        trigger needs the RQ worker/queue infrastructure roadmap.md
+        Phase 5/8 scope, which doesn't exist yet (R3, not built). This is
+        the documented, honest boundary: the mechanism this method
+        provides is real and tested; the scheduler that will eventually
+        call it is a known, flagged gap, not silently assumed done.
+        """
+        result = await self.session.execute(
+            select(Document.storage_key).where(Document.user_id == user_id)
+        )
+        storage_keys = list(result.scalars().all())
+        if not storage_keys:
+            return []
+        await self.session.execute(delete(Document).where(Document.user_id == user_id))
+        await self.session.flush()
+        return storage_keys
 
     async def set_status(
         self,
@@ -102,9 +215,35 @@ class DocumentChunkRepository(TenantScopedRepository[DocumentChunk]):
             ChunkSearchResult(chunk=row[0], similarity=row[1]) for row in result.all()
         ]
 
+    async def list_for_document(
+        self, user_id: uuid.UUID, document_id: uuid.UUID
+    ) -> list[DocumentChunk]:
+        """GET /documents/{id}/content (R2) — the extracted-content viewer
+        reads directly from already-chunked content (document-processing.md
+        §4/§10: there is no separate raw-extracted-text column; chunks ARE
+        the stored extracted content), ordered for reassembly."""
+        result = await self.session.execute(
+            select(DocumentChunk)
+            .where(
+                DocumentChunk.user_id == user_id,
+                DocumentChunk.document_id == document_id,
+            )
+            .order_by(DocumentChunk.chunk_index.asc())
+        )
+        return list(result.scalars().all())
+
 
 class TagRepository(TenantScopedRepository[Tag]):
     model = Tag
+
+    async def get_by_name(self, user_id: uuid.UUID, name: str) -> Tag | None:
+        """FR-DOC-006 / api.md's 409 tag_already_exists pre-check — an
+        explicit query rather than relying on the UNIQUE(user_id, name)
+        constraint violation to surface as the error path."""
+        result = await self.session.execute(
+            select(Tag).where(Tag.user_id == user_id, Tag.name == name)
+        )
+        return result.scalar_one_or_none()
 
 
 class DocumentTagRepository:
@@ -117,6 +256,24 @@ class DocumentTagRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
+    async def replace_for_document(
+        self, document_id: uuid.UUID, tag_ids: Sequence[uuid.UUID]
+    ) -> None:
+        """PATCH /documents/{id}'s "supplying tag_ids replaces the full
+        tag set" (api.md §3) — caller has already validated every tag_id
+        is owned by the requesting user (TagRepository.get_many)."""
+        await self.session.execute(
+            delete(DocumentTag).where(DocumentTag.document_id == document_id)
+        )
+        if tag_ids:
+            self.session.add_all(
+                [
+                    DocumentTag(document_id=document_id, tag_id=tag_id)
+                    for tag_id in tag_ids
+                ]
+            )
+        await self.session.flush()
+
     async def list_tag_ids_for_document(
         self, document_id: uuid.UUID
     ) -> list[uuid.UUID]:
@@ -124,6 +281,26 @@ class DocumentTagRepository:
             select(DocumentTag.tag_id).where(DocumentTag.document_id == document_id)
         )
         return list(result.scalars().all())
+
+    async def list_tags_for_documents(
+        self, document_ids: Sequence[uuid.UUID]
+    ) -> dict[uuid.UUID, list[Tag]]:
+        """GET /documents (R2) — one batched query for every document's
+        tags in the current page, instead of N+1 (skills/backend.md §6's
+        N+1-avoidance rule, applied here without an ORM relationship)."""
+        if not document_ids:
+            return {}
+        result = await self.session.execute(
+            select(DocumentTag.document_id, Tag)
+            .join(Tag, Tag.id == DocumentTag.tag_id)
+            .where(DocumentTag.document_id.in_(document_ids))
+        )
+        tags_by_document: dict[uuid.UUID, list[Tag]] = {
+            doc_id: [] for doc_id in document_ids
+        }
+        for document_id, tag in result.all():
+            tags_by_document[document_id].append(tag)
+        return tags_by_document
 
     async def add(self, document_id: uuid.UUID, tag_id: uuid.UUID) -> None:
         self.session.add(DocumentTag(document_id=document_id, tag_id=tag_id))
