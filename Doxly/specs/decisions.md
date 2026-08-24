@@ -160,6 +160,26 @@ Per Section 37 of the initialization brief, every open question below has an exp
 - **Consequences:** The actual `flyctl deploy`/`railway up` (or equivalent) step that pulls this image onto the chosen container platform is written as a conditional step gated on a platform-specific secret (`FLY_API_TOKEN` or `RAILWAY_TOKEN`) being present in the repository's secrets — until a human with dashboard access provisions that secret and resolves OQ-13, the workflow builds/pushes the image correctly but the final "deploy onto the platform" step no-ops with a clear log message rather than failing the pipeline. Frontend deploy is **not** a GitHub Actions step at all — per `devops.md` §6, Vercel's own GitHub App integration deploys `main` pushes and PR previews independently once a human connects the repository in the Vercel dashboard (a one-time manual setup step outside this repo's scope, same category as GHCR's `packages: write` permission grant).
 - **Status:** Decided (registry + workflow shape). Platform destination remains open — see OQ-13.
 
+## ADR-020: Email provider abstraction — Fake default, stdlib SMTP as the real implementation
+
+- **Decision:** A new `EmailProvider` interface (`backend/app/core/email.py`) mirrors the existing `LLMProvider`/`EmbeddingProvider` pattern (`ADR-011`/`ADR-012`): an ABC, a `FakeEmailProvider` (records sent messages in-memory, zero external calls) as the active default until `EMAIL_PROVIDER=smtp` is configured, and one real implementation, `SMTPEmailProvider`, built on Python's stdlib `smtplib`/`email.message` rather than a new dependency.
+- **Context:** `tasks/remediation-plan.md` R1 requires email delivery for `FR-AUTH-002` (verification) and `FR-AUTH-007` (password reset), and explicitly scoped "a minimal EmailProvider abstraction mirroring the existing LLMProvider/EmbeddingProvider pattern" as part of R1's implementation — no vendor was named in any prior spec, so the choice had to be made here.
+- **Alternatives considered:**
+  - **A SaaS provider SDK** (SendGrid, Postmark, Resend, etc.) — better deliverability tooling (bounce handling, templates) at production scale, but a new third-party dependency and a real account/API key to provision before *any* environment (including local dev/CI) could send a real email; `CLAUDE.md` §5's "a new library is a deliberate choice ... not a convenience reach" argues against pulling one in before a production email volume actually demands it.
+  - **No real implementation at all (Fake-only)** — rejected because `FR-AUTH-002`/`FR-AUTH-007` are real product requirements (P1/P0 respectively) that need to actually reach a user's inbox in production eventually; leaving no real path would silently defer that indefinitely.
+- **Reason:** stdlib SMTP requires zero new dependency and works against any SMTP-speaking provider (a transactional-email vendor's SMTP relay, a self-hosted relay, etc.) via configuration alone (`SMTP_HOST`/`PORT`/`USERNAME`/`PASSWORD`), keeping the vendor choice a deployment-time config decision rather than a code dependency — the same "decide the mechanism, defer the provider" shape as `ADR-009`'s `StorageProvider`.
+- **Consequences:** `FakeEmailProvider` is what every test in this codebase runs against (matching `llm_provider`/`embedding_provider`'s own "fake by default" convention in `core/config.py`) — no test in this remediation effort sends a real email. A future phase may still swap in a SaaS SDK-backed `EmailProvider` implementation behind the same interface without touching `auth_service.py`/`user_service.py`, exactly as `ADR-009` allows for storage.
+- **Status:** Decided.
+
+## ADR-021: Rate-limiter Redis unavailability — fail open, not closed
+
+- **Decision:** `backend/app/core/rate_limit.py`'s token-bucket and auth-throttle checks **fail open** on a Redis connection error — the request is allowed through (and a warning is logged) rather than rejected.
+- **Context:** `api.md` §0.7 and `security.md` §2.4 specify the rate-limiting *behavior* (60/min general, 10/min + daily cap for AI-invoking routes, 5-failure/10-minute auth throttle) but neither specifies what happens if the Redis backend itself is unreachable — flagged as an open implementation decision in `tasks/remediation-plan.md` R1 §4.2, resolved here.
+- **Alternatives considered:** **Fail closed** (reject every request with `503` while Redis is down) — rejected because it would turn a rate-limiter outage into a full API outage, directly contradicting `NFR-AVAIL-001`'s "core functionality remains available even if a supporting subsystem is degraded" principle (written for the AI subsystem specifically, but the same reasoning applies to any non-essential supporting service).
+- **Reason:** A rate limiter's job is to protect the system from abuse/overload; losing that protection temporarily during a Redis outage is a materially smaller harm than losing the entire API for every legitimate user during the same outage. The brute-force-protection tier (`AuthThrottle`) losing its throttle during a Redis outage is the one place this trade-off has a real security cost — accepted as a bounded, logged, temporary degradation rather than a silent one.
+- **Consequences:** Every Redis-unavailable event logs a warning (`rate_limit.redis_unavailable`) so an outage is operationally visible even though it isn't user-visible; `observability.md`'s eventual alerting setup (R12) should alert on this log event specifically, since it marks a period of reduced abuse protection.
+- **Status:** Decided.
+
 ---
 
 ## Open Questions (assumptions made to unblock the spec — flagged for product/business confirmation)
@@ -248,5 +268,6 @@ Per Section 37 of the initialization brief, every open question below has an exp
 
 ## Changelog
 
+- **2026-08-25** — `ADR-020` (EmailProvider abstraction) and `ADR-021` (rate-limiter Redis-unavailable fail-open) added — `tasks/remediation-plan.md` R1.
 - **2026-08-24** — `ADR-019` (CI/CD pipeline implementation) and `OQ-13` (container platform destination) added — `roadmap.md` Phase 18.
 - **2026-08-19** — Initial ADR set and open-question defaults established during SDD initialization.

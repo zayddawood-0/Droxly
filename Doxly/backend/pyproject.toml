@@ -23,6 +23,29 @@ dependencies = [
   # LangGraph: the mandatory workflow engine for the four stateful AI
   # graphs (decisions.md ADR-004) — not hand-rolled orchestration.
   "langgraph>=1.2",
+  # argon2-cffi: security.md §2.1 mandates argon2 (argon2id) password
+  # hashing specifically — the direct library, not passlib's multi-algorithm
+  # wrapper, since only one algorithm is ever used here (decisions.md ADR-010).
+  "argon2-cffi>=23.1",
+  # PyJWT: access-token issuance/verification (decisions.md ADR-010,
+  # security.md §2.2) — HS256, minimal claim set.
+  "pyjwt>=2.9",
+  # Authlib: Google OAuth2 client (decisions.md ADR-010) — used via its
+  # httpx-based async client, not the Starlette session-middleware
+  # integration, to stay consistent with this project's existing httpx-based
+  # provider pattern (app/ai/llm.py, app/ai/embeddings.py) rather than adding
+  # a second HTTP client stack.
+  "authlib>=1.3",
+  # redis: the token-bucket rate-limit backend (decisions.md ADR-008's
+  # Redis instance, reused here rather than provisioning a second store) and
+  # the eventual RQ queue backend (roadmap.md Phase 5/8, still unimplemented
+  # — this dependency is added now for rate limiting, not preemptively for
+  # that unrelated future need).
+  "redis>=5.2",
+  # email-validator: pydantic's EmailStr type requires this as a runtime
+  # extra (schemas/auth.py, schemas/user.py) — not bundled with pydantic
+  # itself.
+  "email-validator>=2.2",
 ]
 
 [project.optional-dependencies]
@@ -55,6 +78,17 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
+
+[tool.ruff.lint.flake8-bugbear]
+# skills/backend.md §7 mandates FastAPI's Depends()-in-default-argument
+# pattern for dependency injection — R1 is the first task with real
+# routers, so this is the first time ruff's B008 (normally a real bug
+# elsewhere: a mutable/expensive default evaluated once at import time) has
+# needed silencing for FastAPI's own idiomatic, documented use of it, where
+# Depends() is called once per request by FastAPI's DI system, not once at
+# import time. This is FastAPI's own recommended ruff configuration, not a
+# blanket B008 suppression.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Cookie", "fastapi.Query", "fastapi.Header"]
 
 [tool.mypy]
 python_version = "3.12"
