@@ -2,7 +2,7 @@ import json
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, cast
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -165,7 +165,10 @@ class FakeLLMProvider(LLMProvider):
             next_response = self._structured_responses.pop(0)
             if isinstance(next_response, Exception):
                 raise next_response
-            return next_response
+            # Test double: the caller queues responses matching the schema it
+            # requests, but that contract isn't expressible in the queue's
+            # own (necessarily erased) storage type.
+            return cast(T, next_response)
         raise StructuredOutputError(
             "FakeLLMProvider has no queued structured_responses for this call."
         )

@@ -31,6 +31,10 @@ dev = [
   "pytest-asyncio>=0.24",
   "ruff>=0.16",
   "black>=26.0",
+  # devops.md §5 stage 2 mandates a backend type-check CI stage ("mypy (or
+  # pyright)") — specified since Phase 1 but never wired to a dependency or
+  # a CI job until Phase 18 actually built that stage.
+  "mypy>=1.14",
 ]
 
 [build-system]
@@ -51,3 +55,11 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.12"
+# Several dependencies (langgraph's internal modules, tiktoken) don't ship
+# type stubs or a py.typed marker Mypy fully resolves — ignoring missing
+# imports for third-party packages, not this project's own code, keeps the
+# CI gate meaningful (app/ itself is checked with no per-file exceptions).
+ignore_missing_imports = true

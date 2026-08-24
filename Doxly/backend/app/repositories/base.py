@@ -1,13 +1,30 @@
 import uuid
 from collections.abc import Sequence
+from typing import Protocol
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Mapped
 
-from app.core.database import Base
+
+class _TenantScopedModel(Protocol):
+    """
+    Structural shape every tenant-scoped model satisfies (`id` + `user_id`
+    columns, per skills/database.md's "New Table Checklist"). `Base` itself
+    can't declare these directly — not every mapped model is tenant-scoped
+    (e.g. `users` has no `user_id`) — so this Protocol lets the repository
+    express "any Base subclass that also has these two columns" for mypy
+    without widening what `Base` promises to every model.
+    """
+
+    id: Mapped[uuid.UUID]
+    user_id: Mapped[uuid.UUID]
+
+    def __init__(self, **kwargs: object) -> None:
+        """SQLAlchemy's generated declarative `__init__` accepts column kwargs."""
 
 
-class TenantScopedRepository[ModelT: Base]:
+class TenantScopedRepository[ModelT: _TenantScopedModel]:
     """
     Generic empty-CRUD scaffolding (specs/roadmap.md Phase 3 expected
     output) for every tenant-scoped table. Every method takes `user_id` as

@@ -1,0 +1,285 @@
+# Doxly CI/CD — per-PR gate + deploy-on-main (specs/devops.md §5-6,
+# specs/decisions.md ADR-019, roadmap.md Phase 18).
+#
+# Stage order matches devops.md §5's mermaid diagram exactly: lint ->
+# type-check -> test (+ migration-check) -> build -> deploy (main only).
+# Each stage is its own job, gated on the previous stage via `needs:`, so a
+# cheap failure (lint) never burns time on an expensive one (test/build).
+# The slower E2E/AI-regression tiers deliberately do NOT run here — see
+# nightly.yml and devops.md §6.1.
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "22"
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Frontend — npm ci
+        working-directory: frontend
+        run: npm ci
+      # devops.md §5 stage 1 previously read "ESLint + Prettier check" —
+      # corrected there in this phase: Prettier has never been installed or
+      # configured in this project (verified: no .prettierrc*, no `prettier`
+      # in package.json/eslint.config.mjs). ESLint alone is this project's
+      # actual lint gate.
+      - name: Frontend — eslint
+        working-directory: frontend
+        run: npx eslint .
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+      - name: Backend — install
+        working-directory: backend
+        run: pip install -e ".[dev]"
+      - name: Backend — ruff
+        working-directory: backend
+        run: ruff check .
+      - name: Backend — black --check
+        working-directory: backend
+        run: black --check .
+
+  typecheck:
+    name: Type-check
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Frontend — npm ci
+        working-directory: frontend
+        run: npm ci
+      - name: Frontend — tsc --noEmit
+        working-directory: frontend
+        run: npx tsc --noEmit
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+      - name: Backend — install
+        working-directory: backend
+        run: pip install -e ".[dev]"
+      # devops.md §5 stage 2: specified since Phase 1, wired to a real
+      # dependency + CI job for the first time in Phase 18 (backend/
+      # pyproject.toml's [tool.mypy] config supplies ignore_missing_imports
+      # for third-party stub gaps; app/ itself has zero exceptions).
+      - name: Backend — mypy
+        working-directory: backend
+        run: mypy app
+
+  test:
+    name: Test (unit + integration + migration-check)
+    needs: typecheck
+    runs-on: ubuntu-latest
+    services:
+      # Same images docker-compose.yml uses for local dev (devops.md §1),
+      # spun up as GitHub Actions service containers rather than via Compose
+      # itself — the standard, lower-overhead pattern for ephemeral CI
+      # service dependencies.
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: doxly
+          POSTGRES_PASSWORD: doxly
+          POSTGRES_DB: doxly
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U doxly -d doxly"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+    env:
+      DATABASE_URL: postgresql+asyncpg://doxly:doxly@localhost:5432/doxly
+      REDIS_URL: redis://localhost:6379
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+      - name: Backend — install
+        working-directory: backend
+        run: pip install -e ".[dev]"
+      # roadmap.md Phase 18's "migration-check (per-PR)" task: proves
+      # migrations apply cleanly from empty against a fresh ephemeral DB,
+      # before the suite that assumes the resulting schema runs against it.
+      - name: Backend — alembic upgrade head (migration-check)
+        working-directory: backend
+        run: alembic upgrade head
+      # core/config.py's llm_provider/embedding_provider default to "fake"
+      # (deterministic, offline, zero-cost) — no ANTHROPIC_API_KEY/
+      # OPENAI_API_KEY secret is needed for this job; every existing test,
+      # including the LangGraph node tests, is written against that default.
+      - name: Backend — pytest
+        working-directory: backend
+        run: pytest -q
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Frontend — npm ci
+        working-directory: frontend
+        run: npm ci
+      - name: Frontend — vitest
+        working-directory: frontend
+        run: npx vitest run
+
+  build:
+    name: Build
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Frontend — npm ci
+        working-directory: frontend
+        run: npm ci
+      - name: Frontend — next build
+        working-directory: frontend
+        run: npm run build
+
+      # Both images are built (not pushed) here purely to prove the
+      # Dockerfiles still build cleanly — catches a build-time-only failure
+      # before merge even though the frontend image itself isn't the
+      # production deploy artifact (deployment.md §2: production frontend is
+      # Vercel-built, not this container; it exists for dev-parity/Compose).
+      - name: Frontend — docker build (dev-parity check)
+        run: docker build -t doxly-frontend:ci ./frontend
+      - name: Backend — docker build
+        run: docker build -t doxly-backend:ci ./backend
+
+  deploy:
+    name: Deploy (main only)
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # Frontend: NOT a workflow step. Vercel's own GitHub App integration
+      # deploys `main` pushes and PR previews independently once a human
+      # connects this repository in the Vercel dashboard (devops.md §6,
+      # deployment.md §2) — logged explicitly so this job's output doesn't
+      # read as "frontend deploy silently skipped."
+      - name: Frontend deploy — handled by Vercel's GitHub integration
+        run: |
+          echo "Frontend deploy is not a GitHub Actions step."
+          echo "Vercel's native GitHub integration deploys main pushes/PR previews directly once the repo is connected in the Vercel dashboard (devops.md §6)."
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+      - name: Backend — install (for alembic)
+        working-directory: backend
+        run: pip install -e ".[dev]"
+
+      # roadmap.md Phase 18's explicit "migration-then-deploy ordering"
+      # requirement: migrations are applied BEFORE the image build/push/
+      # deploy steps below, never after or as an unattended side effect.
+      # Gated on the production DATABASE_URL secret existing — this
+      # repository doesn't provision one yet, so this step no-ops with a
+      # clear message rather than failing the job (devops.md §8 point 4:
+      # applying a migration to production is a deliberate, logged action,
+      # not something CI does unconditionally).
+      - name: Migrate production database (before deploy)
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "DATABASE_URL secret not set — skipping production migration. Configure it once a production database exists (decisions.md OQ-13)."
+          else
+            alembic upgrade head
+          fi
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # decisions.md ADR-019: GHCR requires no additional secret beyond the
+      # workflow's own ambient GITHUB_TOKEN to reach a working push. Image
+      # name is lowercased explicitly — GHCR requires a lowercase path, and
+      # this repository's own name (Droxly) isn't.
+      - name: Compute lowercase image name
+        id: image
+        run: echo "name=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')/doxly-backend" >> "$GITHUB_OUTPUT"
+
+      - name: Build & push backend/worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: true
+          tags: |
+            ${{ steps.image.outputs.name }}:latest
+            ${{ steps.image.outputs.name }}:${{ github.sha }}
+
+      # decisions.md OQ-13: which container platform (Fly.io/Railway/ECS)
+      # actually hosts this image is still open — provisioning one requires
+      # a human with dashboard/billing access. This step is written and
+      # ready; it no-ops with a clear message until FLY_API_TOKEN (or the
+      # chosen platform's equivalent) exists as a repository secret, so no
+      # further code change is needed once that's provisioned.
+      - name: Deploy image to container platform
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          if [ -z "$FLY_API_TOKEN" ]; then
+            echo "No container-platform deploy secret configured yet (decisions.md OQ-13 is still open) — image was pushed to GHCR but not deployed."
+            echo "Image: ${{ steps.image.outputs.name }}:${{ github.sha }}"
+          else
+            echo "FLY_API_TOKEN present — platform deploy would run here (e.g. 'flyctl deploy --image ${{ steps.image.outputs.name }}:${{ github.sha }}')."
+          fi

@@ -148,6 +148,18 @@ Per Section 37 of the initialization brief, every open question below has an exp
 - **Consequences:** `recharts` (`^3.8.0`) is a new frontend dependency (`package.json`). `components/domain/analytics/{line-chart,bar-chart}.tsx` wrap `ChartContainer` with Doxly-specific defaults (flat lines/bars, no gradients, tick-density simplification at mobile width) rather than exposing raw Recharts props to page code, keeping the "flat, no 3D/gradient decoration" rule enforced in one place instead of re-applied at every call site.
 - **Status:** Decided.
 
+## ADR-019: CI/CD pipeline implementation — GitHub Actions job graph, GHCR as the backend/worker registry
+
+- **Decision:** `devops.md` §5–6's CI/CD design (lint → type-check → test → build → deploy-gate-on-main) is implemented as two GitHub Actions workflows: `.github/workflows/ci.yml` (runs on every PR and on push to `main`; the `deploy` job is gated to `main`-only via `if:`) and `.github/workflows/nightly.yml` (scheduled cron + manual `workflow_dispatch`; runs the slower E2E and AI-regression tiers per `testing.md` §7's "may run as a separate, slower CI job ... rather than blocking every PR"). The backend/worker image is pushed to the **GitHub Container Registry (GHCR)** — `ghcr.io/<owner>/doxly-backend` — authenticated with the workflow's own built-in `GITHUB_TOKEN`, not a third-party registry requiring a separately provisioned credential.
+- **Context:** `devops.md` §6 left "the exact registry" as a production-topology decision explicitly deferred to `deployment.md`; `deployment.md` never picked one either. Phase 18 (`roadmap.md`) is the phase whose job is to actually wire the pipeline, so the decision had to be made here rather than deferred again.
+- **Alternatives considered:**
+  - **Docker Hub** — the default many tutorials use, but requires provisioning and storing a separate `DOCKERHUB_TOKEN` repo secret before any image can be pushed at all, and free-tier pull-rate limits are a real operational risk for a production pull path.
+  - **A cloud-specific registry (ECR/GCR/ACR)** — the natural choice once the container platform is AWS ECS/Fargate (`ADR-007`'s scale-up path), but MVP's container platform is still an open choice (Fly.io/Railway, see the new OQ-13 below); picking a cloud registry now would couple the image-storage decision to a platform decision that hasn't been made.
+  - **The container platform's own built-in registry** (Fly.io and Railway both offer one) — viable, but ties the image to whichever platform is chosen, which is exactly the coupling this project's `StorageProvider`-style "decide the mechanism, defer the provider" pattern (`ADR-009`) tries to avoid elsewhere.
+- **Reason:** GHCR requires zero additional secret provisioning to reach a working push (the workflow's ambient `GITHUB_TOKEN` already has `packages: write` once the workflow permission is granted), keeps the image co-located with the source repo for traceability (a pushed tag maps 1:1 to a commit SHA), and is platform-agnostic — whichever container platform OQ-13 resolves to, it pulls from the same GHCR image rather than needing a registry migration alongside the platform decision.
+- **Consequences:** The actual `flyctl deploy`/`railway up` (or equivalent) step that pulls this image onto the chosen container platform is written as a conditional step gated on a platform-specific secret (`FLY_API_TOKEN` or `RAILWAY_TOKEN`) being present in the repository's secrets — until a human with dashboard access provisions that secret and resolves OQ-13, the workflow builds/pushes the image correctly but the final "deploy onto the platform" step no-ops with a clear log message rather than failing the pipeline. Frontend deploy is **not** a GitHub Actions step at all — per `devops.md` §6, Vercel's own GitHub App integration deploys `main` pushes and PR previews independently once a human connects the repository in the Vercel dashboard (a one-time manual setup step outside this repo's scope, same category as GHCR's `packages: write` permission grant).
+- **Status:** Decided (registry + workflow shape). Platform destination remains open — see OQ-13.
+
 ---
 
 ## Open Questions (assumptions made to unblock the spec — flagged for product/business confirmation)
@@ -224,8 +236,17 @@ Per Section 37 of the initialization brief, every open question below has an exp
 - **Why:** Shipping a CSP that breaks the app in production is a worse outcome than a real, slightly-less-strict CSP that actually protects the site (blocks all external script/style/image/font/connect origins, framing, and plugin objects) — `'unsafe-inline'` on `script-src` is the one directive not at its strictest possible value, not a broadly weakened policy.
 - **Status:** **Assumption** — revisit when upgrading Next.js, and re-run this same before/after production-build verification before attempting the nonce approach again.
 
+### OQ-13 — Container platform destination (Fly.io vs. Railway vs. ECS/Fargate)
+
+- **Question:** `ADR-007` names Fly.io or Railway as the MVP default "recommendation," not a decision — which one actually hosts the backend/worker containers, and what are its project/app names, region, and secret-store setup?
+- **Recommended default:** Fly.io, per `ADR-007`'s own ordering and `deployment.md` §1's topology diagram listing it first — but not provisioned or confirmed against a real account here.
+- **Why still open:** Provisioning a container-platform account/project and its API token is an action with real-world side effects (billing, a live deployment target) that requires a human with dashboard/billing access — outside what a spec or a CI workflow file can resolve on its own, same category as `OQ-04`'s storage-provider account provisioning.
+- **How `ADR-019`'s pipeline handles this today:** the `deploy-backend` job in `.github/workflows/ci.yml` builds and pushes the image to GHCR unconditionally, then runs the platform-specific deploy step only `if: secrets.FLY_API_TOKEN != ''` (or the Railway equivalent) — so the pipeline is ready to deploy the moment this question is resolved and the corresponding secret is added, without a further code change.
+- **Status:** **Open** — blocks the `deploy-backend` job's platform-deploy step from ever actually running until resolved; does not block CI (lint/type-check/test/build) or the image push itself.
+
 ---
 
 ## Changelog
 
+- **2026-08-24** — `ADR-019` (CI/CD pipeline implementation) and `OQ-13` (container platform destination) added — `roadmap.md` Phase 18.
 - **2026-08-19** — Initial ADR set and open-question defaults established during SDD initialization.

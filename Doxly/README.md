@@ -3,7 +3,7 @@
 **AI-powered document intelligence.**
 *Your docs, but smarter.*
 
-> **Status: specification foundation.** This repository currently contains the complete Specification-Driven Development (SDD) documentation for Doxly — no application source code has been written yet. Everything below describes what Doxly will be and how it will be built, not a running application. See [§ Current State](#current-state) before looking for setup instructions.
+> **Status: Phases 1–18 of 19 implemented.** This repository is built via Specification-Driven Development — `specs/` remains the source of truth, and `frontend/`/`backend/` are real, running applications built against it, with CI/CD wired per `specs/devops.md`. See [§ Current State](#current-state) for what's implemented and the one significant known gap.
 
 ## What is Doxly
 
@@ -101,7 +101,8 @@ Every requirement in [`specs/requirements.md`](specs/requirements.md) has a stab
 │   └── devops.md                Docker/CI/CD/Vercel practice
 │
 └── tasks/
-    └── README.md                Task template — no tasks created yet
+    ├── README.md                Task template
+    └── 01-...18-*.md            Per-phase task files (Phases 1-18)
 ```
 
 ## Development Workflow
@@ -114,7 +115,9 @@ Every requirement in [`specs/requirements.md`](specs/requirements.md) has a stab
 
 ## Current State
 
-**Nothing has been implemented yet.** There is no `package.json`, no `pyproject.toml`, no Dockerfile, no application code, and no dependencies installed — only this specification set. Setup/run instructions will be added once Phase 1 (Foundation) of `specs/roadmap.md` produces an actual scaffolded application; documenting install/run commands for code that doesn't exist yet would be misleading, so none are included here.
+Phases 1–18 of `specs/roadmap.md` have been implemented (see `tasks/` for the per-phase task files and their Definition of Done). `frontend/` (Next.js) and `backend/` (FastAPI) are real, dependency-installed applications with their own `package.json`/`pyproject.toml`, Dockerfiles, and test suites; `.github/workflows/ci.yml`/`nightly.yml` run lint/type-check/test/build on every PR and a slower E2E/AI-regression tier nightly (`specs/devops.md` §5–§6.1).
+
+**The one significant gap a new contributor should know about immediately:** `backend/app/main.py` currently exposes only a `/health` endpoint — no `APIRouter` for auth, documents, chat, extraction, comparison, search, or analytics has been wired in yet, even though the underlying service/repository/LangGraph logic for most of those domains is implemented and tested. This is a pre-existing gap from Phases 2/4/9–14, documented in `specs/testing.md` §3 and `tasks/18-ci-cd.md`, not something recent work introduced — but it means the frontend's BFF proxy (`frontend/app/api/v1/[...path]/route.ts`) currently has almost nothing real to call. Resourcing this is flagged as the top priority before Phase 19 (Production Deployment).
 
 ## Open Questions
 

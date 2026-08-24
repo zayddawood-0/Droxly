@@ -149,6 +149,8 @@ def failure_node(state: SummarizationState) -> dict:
 
 def _quality_router(state: SummarizationState) -> str:
     result = state["quality_check_result"]
+    if result is None:
+        return "fail"
     if result.passed:
         return "pass"
     if state["retry_count"] <= MAX_QUALITY_RETRIES:
