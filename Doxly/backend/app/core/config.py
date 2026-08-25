@@ -92,5 +92,17 @@ class Settings(BaseSettings):
     # target for a direct-upload URL even in local dev.
     backend_public_base_url: str = "http://localhost:8000"
 
+    # --- R3 remediation (tasks/R3-document-processing.md, decisions.md
+    # ADR-026) — worker-crash recovery ---
+    # A document stuck in a non-terminal processing stage (queued/
+    # extracting/chunking/embedding) longer than this is treated as
+    # reprocessable, same as one already `failed` (api.md's reprocess
+    # entry). 900s (15 min) — no spec-defined threshold existed; chosen as
+    # a documented multiple of `performance.md` NFR-PERF-004's 60s p95 for
+    # a *typical* 20-page document, generous enough that a legitimately
+    # large (up to the 25MB ceiling) document in progress is very unlikely
+    # to be misidentified as stuck. See ADR-026 for the full reasoning.
+    document_processing_stale_threshold_seconds: int = 900
+
 
 settings = Settings()

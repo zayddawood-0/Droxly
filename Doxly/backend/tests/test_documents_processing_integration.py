@@ -12,17 +12,21 @@ confirm/reprocess integration contract.
 
 import io
 import uuid
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
 
 import pytest
+from sqlalchemy import select
 
 from app.ai.embeddings import FakeEmbeddingProvider
 from app.core.queue import get_document_processing_queue
 from app.core.storage import get_storage_provider
+from app.models.observability import AiRequest
 from app.repositories.document_repository import (
     DocumentChunkRepository,
     DocumentRepository,
 )
+from app.repositories.observability_repository import AiRequestRepository
 from app.services.document_processing_service import DocumentProcessingService
 from tests._pdf_fixtures import build_text_pdf
 from tests.conftest import auth_cookie_headers, make_user
@@ -114,6 +118,7 @@ async def test_full_pipeline_reaches_ready_for_every_supported_mime_type(
         DocumentChunkRepository(db_session),
         get_storage_provider(),
         FakeEmbeddingProvider(),
+        AiRequestRepository(db_session),
     )
     await service.process_document(user.id, document_id)
 
@@ -149,6 +154,7 @@ async def test_reprocess_clears_prior_chunks_and_enqueues_a_new_job(client, db_s
         DocumentChunkRepository(db_session),
         get_storage_provider(),
         FakeEmbeddingProvider(),
+        AiRequestRepository(db_session),
     )
     await service.process_document(user.id, document_id)
     original_chunks = await DocumentChunkRepository(db_session).list_for_document(
@@ -202,6 +208,7 @@ async def test_process_document_never_touches_another_users_document(
         DocumentChunkRepository(db_session),
         get_storage_provider(),
         FakeEmbeddingProvider(),
+        AiRequestRepository(db_session),
     )
     await service.process_document(attacker.id, document_id)  # wrong user_id
 
@@ -211,3 +218,201 @@ async def test_process_document_never_touches_another_users_document(
         owner.id, document_id
     )
     assert chunks == []
+
+
+# --- R3 remediation (tasks/R3-document-processing.md, decisions.md
+# ADR-026) — worker crash recovery via reprocess's extended contract ---
+
+
+async def _make_stale(db_session, user_id, document_id, *, status: str) -> None:
+    """
+    Directly backdates `updated_at` past the configured staleness threshold
+    without going through `DocumentRepository.set_status` (which would
+    correctly re-stamp `updated_at` to "now" — the opposite of what a test
+    simulating a crashed, long-stuck job needs). Setting the attribute
+    explicitly and flushing bypasses `UpdatedAtMixin`'s `onupdate` default,
+    which only fires when the column is otherwise absent from the flush.
+    """
+    from app.core.config import settings
+
+    document = await DocumentRepository(db_session).get(user_id, document_id)
+    assert document is not None
+    document.status = status
+    document.updated_at = datetime.now(UTC) - timedelta(
+        seconds=settings.document_processing_stale_threshold_seconds + 60
+    )
+    await db_session.flush()
+
+
+async def test_stale_non_terminal_document_is_recoverable_via_reprocess(
+    client, db_session
+):
+    user = await make_user(db_session)
+    document_id = await _upload_document(
+        client,
+        user.id,
+        file_name="a.txt",
+        mime_type="text/plain",
+        data=b"content stuck mid-pipeline by a simulated worker crash",
+    )
+    await _make_stale(db_session, user.id, document_id, status="embedding")
+
+    queue = get_document_processing_queue()
+    before = queue.count
+
+    response = await client.post(
+        f"/api/v1/documents/{document_id}/reprocess",
+        headers=auth_cookie_headers(user.id),
+    )
+
+    assert response.status_code == 202, response.text
+    assert queue.count == before + 1  # exactly one recovery job, no duplicates
+
+    document = await DocumentRepository(db_session).get(user.id, document_id)
+    assert document.status == "queued"
+    assert document.processing_error is None
+
+
+async def test_active_non_stale_document_cannot_be_reprocessed(client, db_session):
+    """A document genuinely mid-processing (not crashed, just not finished
+    yet) must not be recoverable out from under itself — `updated_at` is
+    fresh (the document was just created), so it fails the staleness check
+    the same way a `ready` document fails the terminal-status check."""
+    user = await make_user(db_session)
+    document_id = await _upload_document(
+        client,
+        user.id,
+        file_name="a.txt",
+        mime_type="text/plain",
+        data=b"content still being actively processed",
+    )
+    await DocumentRepository(db_session).set_status(
+        user.id, document_id, status="embedding"
+    )
+
+    queue = get_document_processing_queue()
+    before = queue.count
+
+    response = await client.post(
+        f"/api/v1/documents/{document_id}/reprocess",
+        headers=auth_cookie_headers(user.id),
+    )
+
+    assert response.status_code == 409, response.text
+    assert queue.count == before  # no duplicate job enqueued
+
+    document = await DocumentRepository(db_session).get(user.id, document_id)
+    assert document.status == "embedding"  # untouched
+
+
+async def test_stale_document_recovered_via_reprocess_completes_pipeline(
+    client, db_session
+):
+    """End-to-end: a crash-stuck document, recovered via reprocess, then
+    actually processed (simulating the worker picking the requeued job back
+    up), reaches `ready` exactly like any other reprocessed document."""
+    user = await make_user(db_session)
+    document_id = await _upload_document(
+        client,
+        user.id,
+        file_name="a.txt",
+        mime_type="text/plain",
+        data=b"Real plain text content recovered after a crash.",
+    )
+    await _make_stale(db_session, user.id, document_id, status="chunking")
+
+    response = await client.post(
+        f"/api/v1/documents/{document_id}/reprocess",
+        headers=auth_cookie_headers(user.id),
+    )
+    assert response.status_code == 202, response.text
+
+    service = DocumentProcessingService(
+        DocumentRepository(db_session),
+        DocumentChunkRepository(db_session),
+        get_storage_provider(),
+        FakeEmbeddingProvider(),
+        AiRequestRepository(db_session),
+    )
+    await service.process_document(user.id, document_id)
+
+    document = await DocumentRepository(db_session).get(user.id, document_id)
+    assert document.status == "ready"
+    chunks = await DocumentChunkRepository(db_session).list_for_document(
+        user.id, document_id
+    )
+    assert len(chunks) > 0
+
+
+async def test_cannot_recover_another_users_stale_document(client, db_session):
+    """Cross-tenant category (testing.md §3.5) applied to the new staleness
+    recovery path specifically — a stale document is still someone else's
+    document."""
+    owner = await make_user(db_session)
+    attacker = await make_user(db_session)
+    document_id = await _upload_document(
+        client,
+        owner.id,
+        file_name="a.txt",
+        mime_type="text/plain",
+        data=b"owner's document, stuck by a simulated crash",
+    )
+    await _make_stale(db_session, owner.id, document_id, status="embedding")
+
+    queue = get_document_processing_queue()
+    before = queue.count
+
+    response = await client.post(
+        f"/api/v1/documents/{document_id}/reprocess",
+        headers=auth_cookie_headers(attacker.id),
+    )
+
+    assert response.status_code == 404, response.text  # never 403 — NFR-SEC-001
+    assert queue.count == before  # attacker's call enqueued nothing
+
+    document = await DocumentRepository(db_session).get(owner.id, document_id)
+    assert document.status == "embedding"  # untouched by the attacker's attempt
+
+
+# --- R3 remediation (NFR-OBS-001) — embedding call observability, against
+# a real ai_requests row rather than a fake repository ---
+
+
+async def test_embedding_call_writes_one_ai_request_row_with_correct_tenant(
+    client, db_session
+):
+    user = await make_user(db_session)
+    document_id = await _upload_document(
+        client,
+        user.id,
+        file_name="a.txt",
+        mime_type="text/plain",
+        data=b"Real plain text content for observability logging.",
+    )
+
+    service = DocumentProcessingService(
+        DocumentRepository(db_session),
+        DocumentChunkRepository(db_session),
+        get_storage_provider(),
+        FakeEmbeddingProvider(),
+        AiRequestRepository(db_session),
+    )
+    await service.process_document(user.id, document_id)
+
+    rows = (
+        (
+            await db_session.execute(
+                select(AiRequest).where(
+                    AiRequest.user_id == user.id, AiRequest.operation == "embedding"
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.provider == "fake"
+    assert row.status == "success"
+    assert row.error_code is None
+    assert row.input_tokens is not None and row.input_tokens > 0

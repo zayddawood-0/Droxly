@@ -10,6 +10,8 @@ reuses the same service layer as the API, never a parallel code path."
 """
 
 import asyncio
+import logging
+import time
 import uuid
 
 from app.ai.embeddings import EmbeddingProvider
@@ -27,6 +29,9 @@ from app.repositories.document_repository import (
     DocumentChunkRepository,
     DocumentRepository,
 )
+from app.repositories.observability_repository import AiRequestRepository
+
+logger = logging.getLogger(__name__)
 
 # document-processing.md §4/§6 — the sanitized message for the one
 # degenerate-input failure mode that isn't itself a DocumentParseError
@@ -44,11 +49,13 @@ class DocumentProcessingService:
         chunk_repo: DocumentChunkRepository,
         storage_provider: StorageProvider,
         embedding_provider: EmbeddingProvider,
+        ai_request_repo: AiRequestRepository,
     ) -> None:
         self.document_repo = document_repo
         self.chunk_repo = chunk_repo
         self.storage_provider = storage_provider
         self.embedding_provider = embedding_provider
+        self.ai_request_repo = ai_request_repo
 
     async def process_document(
         self, user_id: uuid.UUID, document_id: uuid.UUID
@@ -103,9 +110,7 @@ class DocumentProcessingService:
             await self.document_repo.set_status(
                 user_id, document_id, status="embedding"
             )
-            vectors = await self.embedding_provider.embed_batch(
-                [c.content for c in text_chunks]
-            )
+            vectors = await self._embed_with_observability(user_id, text_chunks)
 
             await self.chunk_repo.delete_for_document(user_id, document_id)
             await self.chunk_repo.bulk_create(
@@ -145,4 +150,73 @@ class DocumentProcessingService:
                 document_id,
                 status="failed",
                 processing_error=_EMPTY_DOCUMENT_MESSAGE,
+            )
+
+    async def _embed_with_observability(
+        self, user_id: uuid.UUID, text_chunks: list
+    ) -> list[list[float]]:
+        """
+        R3 remediation (`NFR-OBS-001`, P0) — every embedding provider call
+        writes one `ai_requests` row (`operation="embedding"`), success and
+        failure alike, mirroring the pattern `chat_service.py` already
+        established for LLM calls (`observability.md` §4). `input_tokens`
+        reuses each chunk's already-computed `token_count` — real data, not
+        an estimate; embedding has no "generated" tokens, so
+        `output_tokens` stays `None` (the column is nullable for exactly
+        this kind of operation-specific gap, `database.md` §3.13).
+        """
+        input_tokens = sum(chunk.token_count for chunk in text_chunks)
+        status = "success"
+        error_code: str | None = None
+        start = time.monotonic()
+        try:
+            return await self.embedding_provider.embed_batch(
+                [chunk.content for chunk in text_chunks]
+            )
+        except Exception:
+            status = "error"
+            error_code = "embedding_failed"
+            raise
+        finally:
+            latency_ms = int((time.monotonic() - start) * 1000)
+            await self._log_ai_request(
+                user_id,
+                status=status,
+                error_code=error_code,
+                input_tokens=input_tokens,
+                latency_ms=latency_ms,
+            )
+
+    async def _log_ai_request(
+        self,
+        user_id: uuid.UUID,
+        *,
+        status: str,
+        error_code: str | None,
+        input_tokens: int,
+        latency_ms: int,
+    ) -> None:
+        """
+        A failure writing this observability row must never turn an
+        otherwise-successful embedding call into a failed document (or vice
+        versa) — the embedding call's own outcome, already decided by
+        `_embed_with_observability`'s `try`/`except`/`raise`, is
+        unaffected by whatever happens here.
+        """
+        try:
+            await self.ai_request_repo.create(
+                user_id,
+                operation="embedding",
+                provider=self.embedding_provider.provider_name,
+                model=self.embedding_provider.model_name,
+                input_tokens=input_tokens,
+                output_tokens=None,
+                latency_ms=latency_ms,
+                status=status,
+                error_code=error_code,
+            )
+        except Exception:  # noqa: BLE001 — best-effort logging, see docstring above
+            logger.warning(
+                "document_processing.ai_request_log_failed",
+                extra={"user_id": str(user_id), "operation": "embedding"},
             )

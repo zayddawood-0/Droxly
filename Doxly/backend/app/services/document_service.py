@@ -7,7 +7,9 @@ never in the router or repository.
 import hashlib
 import uuid
 from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 
+from app.core.config import settings
 from app.core.queue import enqueue_document_processing
 from app.core.storage import (
     ObjectMetadata,
@@ -314,13 +316,40 @@ class DocumentService:
 
     # --- FR-PROC-005 (reprocess) ---
 
+    # R3 remediation (tasks/R3-document-processing.md, decisions.md
+    # ADR-026) — a worker crash mid-job leaves a document in one of these
+    # non-terminal stages forever, with no exception ever raised for RQ's
+    # own retry to act on. document-processing.md §5's status machine.
+    _NON_TERMINAL_STATUSES = frozenset(
+        {"queued", "extracting", "chunking", "embedding"}
+    )
+
+    def _is_stale_non_terminal(self, document: Document) -> bool:
+        """
+        api.md's reprocess entry (amended by this remediation): a document
+        in a non-terminal stage for longer than
+        `settings.document_processing_stale_threshold_seconds` is treated
+        as reprocessable, the same as one already `failed` — `updated_at`
+        is bumped by every real stage transition (`DocumentRepository.
+        set_status`), so a stale `updated_at` reliably means nothing has
+        touched this document in that window, not merely that it hasn't
+        finished yet (see ADR-026 for the threshold's derivation and the
+        residual risk of a very large, still-legitimately-running job).
+        """
+        if document.status not in self._NON_TERMINAL_STATUSES:
+            return False
+        threshold = timedelta(
+            seconds=settings.document_processing_stale_threshold_seconds
+        )
+        return datetime.now(UTC) - document.updated_at > threshold
+
     async def reprocess_document(
         self, user_id: uuid.UUID, document_id: uuid.UUID
     ) -> Document:
         document = await self.document_repo.get(user_id, document_id)
         if document is None:
             raise NotFoundError()
-        if document.status != "failed":
+        if document.status != "failed" and not self._is_stale_non_terminal(document):
             raise InvalidStatusError()
 
         # "prior chunks/embeddings for the document are discarded and

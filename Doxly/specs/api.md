@@ -195,7 +195,7 @@ Timestamps: ISO 8601 UTC, e.g. `2026-08-19T14:30:00Z`. IDs: UUIDv4 strings every
 - **Auth:** required. **AI rate limit** (§0.7). **Fulfills:** `FR-PROC-005`.
 - **Request:** none.
 - **Response 202:** `{ id: uuid, status: "queued" }`. Re-enqueues the full extract → chunk → embed pipeline; prior chunks/embeddings for the document are discarded and replaced, not appended.
-- **Errors:** `404` | `409 invalid_status` if current `status` is not `failed` (reprocessing a healthy `ready` document is a distinct, explicit action a user shouldn't trigger accidentally via this route — re-running on a `ready` doc is out of scope for MVP).
+- **Errors:** `404` | `409 invalid_status` if current `status` is not `failed` AND the document is not a stale non-terminal document (in a processing state for longer than the configured staleness threshold — see `decisions.md` ADR-026). A stale non-terminal document is treated as reprocessable the same as a failed one (reprocessing a healthy `ready` document is a distinct, explicit action a user shouldn't trigger accidentally via this route — re-running on a `ready` doc is out of scope for MVP).
 
 ### `GET /api/v1/documents/{id}/status`
 - **Auth:** required. **Fulfills:** `FR-DOC-008`.

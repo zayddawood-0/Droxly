@@ -43,6 +43,7 @@ from app.repositories.document_repository import (
     DocumentChunkRepository,
     DocumentRepository,
 )
+from app.repositories.observability_repository import AiRequestRepository
 from app.services.document_processing_service import DocumentProcessingService
 
 _TRANSIENT_FAILURE_MESSAGE = (
@@ -76,6 +77,7 @@ async def _process_document_async(user_id: uuid.UUID, document_id: uuid.UUID) ->
             DocumentChunkRepository(session),
             get_storage_provider(),
             get_embedding_provider(),
+            AiRequestRepository(session),
         )
         try:
             await service.process_document(user_id, document_id)

@@ -16,6 +16,12 @@ class EmbeddingProvider(ABC):
     """
 
     model_name: str
+    # R3 remediation (tasks/R3-document-processing.md, NFR-OBS-001) —
+    # mirrors LLMProvider.provider_name (app/ai/llm.py) exactly, so
+    # DocumentProcessingService can log an `ai_requests` row for every
+    # embedding call the same way chat_service.py already does for LLM
+    # calls, without inventing a second way to name a provider.
+    provider_name: str
 
     @abstractmethod
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
@@ -38,6 +44,7 @@ class FakeEmbeddingProvider(EmbeddingProvider):
     """
 
     model_name = "fake-hashing-v1"
+    provider_name = "fake"
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
         return [self._embed_one(text) for text in texts]
@@ -61,6 +68,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
     """Real embeddings via OpenAI's REST API (ADR-012 default: text-embedding-3-small, 1536 dims)."""
 
     model_name = "text-embedding-3-small"
+    provider_name = "openai"
 
     def __init__(self, api_key: str) -> None:
         self._api_key = api_key

@@ -78,6 +78,25 @@ class _FakeStorageProvider:
         return self._data
 
 
+class _FakeAiRequestRepository:
+    """
+    R3 remediation (NFR-OBS-001) — mirrors the real `AiRequestRepository.
+    create(user_id, **fields)` signature (repositories/base.py's
+    `TenantScopedRepository.create`) closely enough to assert on what
+    `DocumentProcessingService._log_ai_request` actually sends, without a
+    database.
+    """
+
+    def __init__(self, *, raise_on_create: bool = False) -> None:
+        self.calls: list[dict] = []
+        self._raise_on_create = raise_on_create
+
+    async def create(self, user_id, **fields):
+        if self._raise_on_create:
+            raise RuntimeError("observability store unavailable")
+        self.calls.append({"user_id": user_id, **fields})
+
+
 @dataclass
 class _FakeParser(DocumentParser):
     mime_type: str = "application/pdf"
@@ -107,8 +126,13 @@ def embedding_provider() -> FakeEmbeddingProvider:
     return FakeEmbeddingProvider()
 
 
+@pytest.fixture
+def ai_request_repo() -> _FakeAiRequestRepository:
+    return _FakeAiRequestRepository()
+
+
 async def test_successful_pipeline_transitions_through_every_stage_in_order(
-    monkeypatch, embedding_provider
+    monkeypatch, embedding_provider, ai_request_repo
 ):
     document = _FakeDocument(
         id=uuid.uuid4(), storage_key="k", mime_type="application/pdf", status="queued"
@@ -129,6 +153,7 @@ async def test_successful_pipeline_transitions_through_every_stage_in_order(
         chunk_repo,
         _FakeStorageProvider(b"%PDF-fake"),
         embedding_provider,
+        ai_request_repo,
     )
 
     await service.process_document(document.id, document.id)
@@ -145,7 +170,7 @@ async def test_successful_pipeline_transitions_through_every_stage_in_order(
 
 
 async def test_permanent_parse_failure_marks_failed_without_raising(
-    monkeypatch, embedding_provider
+    monkeypatch, embedding_provider, ai_request_repo
 ):
     document = _FakeDocument(
         id=uuid.uuid4(), storage_key="k", mime_type="application/pdf", status="queued"
@@ -160,6 +185,7 @@ async def test_permanent_parse_failure_marks_failed_without_raising(
         chunk_repo,
         _FakeStorageProvider(b"%PDF-fake"),
         embedding_provider,
+        ai_request_repo,
     )
 
     await service.process_document(document.id, document.id)  # must not raise
@@ -171,7 +197,7 @@ async def test_permanent_parse_failure_marks_failed_without_raising(
 
 
 async def test_transient_failure_propagates_and_does_not_mark_failed(
-    monkeypatch, embedding_provider
+    monkeypatch, embedding_provider, ai_request_repo
 ):
     """
     NFR-AVAIL-002 — a transient failure is the caller's (worker's) job to
@@ -191,6 +217,7 @@ async def test_transient_failure_propagates_and_does_not_mark_failed(
         chunk_repo,
         _FakeStorageProvider(b"%PDF-fake"),
         embedding_provider,
+        ai_request_repo,
     )
 
     with pytest.raises(TransientParseError):
@@ -200,7 +227,7 @@ async def test_transient_failure_propagates_and_does_not_mark_failed(
 
 
 async def test_degenerate_extraction_yields_empty_document_error_and_marks_failed(
-    monkeypatch, embedding_provider
+    monkeypatch, embedding_provider, ai_request_repo
 ):
     document = _FakeDocument(
         id=uuid.uuid4(), storage_key="k", mime_type="text/plain", status="queued"
@@ -218,6 +245,7 @@ async def test_degenerate_extraction_yields_empty_document_error_and_marks_faile
         chunk_repo,
         _FakeStorageProvider(b"whitespace"),
         embedding_provider,
+        ai_request_repo,
     )
 
     await service.process_document(document.id, document.id)
@@ -227,7 +255,7 @@ async def test_degenerate_extraction_yields_empty_document_error_and_marks_faile
 
 
 async def test_csv_parsed_document_uses_row_group_chunking(
-    monkeypatch, embedding_provider
+    monkeypatch, embedding_provider, ai_request_repo
 ):
     document = _FakeDocument(
         id=uuid.uuid4(), storage_key="k", mime_type="text/csv", status="queued"
@@ -248,6 +276,7 @@ async def test_csv_parsed_document_uses_row_group_chunking(
         chunk_repo,
         _FakeStorageProvider(b"name,score"),
         embedding_provider,
+        ai_request_repo,
     )
 
     await service.process_document(document.id, document.id)
@@ -258,7 +287,9 @@ async def test_csv_parsed_document_uses_row_group_chunking(
     assert chunk_repo.created[0]["page_number"] is None
 
 
-async def test_already_ready_document_is_a_no_op(monkeypatch, embedding_provider):
+async def test_already_ready_document_is_a_no_op(
+    monkeypatch, embedding_provider, ai_request_repo
+):
     document = _FakeDocument(
         id=uuid.uuid4(), storage_key="k", mime_type="application/pdf", status="ready"
     )
@@ -272,6 +303,7 @@ async def test_already_ready_document_is_a_no_op(monkeypatch, embedding_provider
         chunk_repo,
         _FakeStorageProvider(b"%PDF-fake"),
         embedding_provider,
+        ai_request_repo,
     )
 
     await service.process_document(document.id, document.id)
@@ -280,7 +312,9 @@ async def test_already_ready_document_is_a_no_op(monkeypatch, embedding_provider
     assert parser.calls == []
 
 
-async def test_missing_document_is_silently_skipped(monkeypatch, embedding_provider):
+async def test_missing_document_is_silently_skipped(
+    monkeypatch, embedding_provider, ai_request_repo
+):
     document_repo = _FakeDocumentRepository(None)
     chunk_repo = _FakeChunkRepository()
     parser = _FakeParser()
@@ -291,6 +325,7 @@ async def test_missing_document_is_silently_skipped(monkeypatch, embedding_provi
         chunk_repo,
         _FakeStorageProvider(b"%PDF-fake"),
         embedding_provider,
+        ai_request_repo,
     )
 
     await service.process_document(uuid.uuid4(), uuid.uuid4())  # must not raise
@@ -299,7 +334,7 @@ async def test_missing_document_is_silently_skipped(monkeypatch, embedding_provi
 
 
 async def test_retry_after_partial_failure_clears_prior_chunks_before_rewriting(
-    monkeypatch, embedding_provider
+    monkeypatch, embedding_provider, ai_request_repo
 ):
     """
     NFR-AVAIL-002/FR-PROC-005 idempotency — simulates a document that
@@ -332,10 +367,138 @@ async def test_retry_after_partial_failure_clears_prior_chunks_before_rewriting(
         chunk_repo,
         _FakeStorageProvider(b"%PDF-fake"),
         embedding_provider,
+        ai_request_repo,
     )
 
     await service.process_document(document.id, document.id)
 
     assert chunk_repo.deleted_calls == 1
     assert all("stale chunk" not in c["content"] for c in chunk_repo.created)
+    assert document.status == "ready"
+
+
+# --- R3 remediation (NFR-OBS-001) — embedding call observability ---
+
+
+async def test_successful_embedding_call_writes_exactly_one_ai_request_row(
+    monkeypatch, embedding_provider, ai_request_repo
+):
+    user_id = uuid.uuid4()
+    document = _FakeDocument(
+        id=uuid.uuid4(), storage_key="k", mime_type="application/pdf", status="queued"
+    )
+    document_repo = _FakeDocumentRepository(document)
+    chunk_repo = _FakeChunkRepository()
+    parser = _FakeParser(
+        result=ParsedText(
+            full_text="A meaningful paragraph about testing. " * 30,
+            page_breaks=None,
+            page_count=3,
+        )
+    )
+    _install_fake_parser(monkeypatch, parser)
+
+    service = DocumentProcessingService(
+        document_repo,
+        chunk_repo,
+        _FakeStorageProvider(b"%PDF-fake"),
+        embedding_provider,
+        ai_request_repo,
+    )
+
+    await service.process_document(user_id, document.id)
+
+    assert len(ai_request_repo.calls) == 1
+    call = ai_request_repo.calls[0]
+    assert call["user_id"] == user_id
+    assert call["operation"] == "embedding"
+    assert call["provider"] == embedding_provider.provider_name
+    assert call["model"] == embedding_provider.model_name
+    assert call["status"] == "success"
+    assert call["error_code"] is None
+    assert call["output_tokens"] is None
+    assert call["input_tokens"] > 0
+    assert isinstance(call["latency_ms"], int)
+
+
+async def test_failed_embedding_call_writes_exactly_one_ai_request_row_with_error(
+    monkeypatch, ai_request_repo
+):
+    class _FailingEmbeddingProvider:
+        model_name = "fake-hashing-v1"
+        provider_name = "fake"
+
+        async def embed_batch(self, texts):
+            raise RuntimeError("provider unavailable")
+
+    user_id = uuid.uuid4()
+    document = _FakeDocument(
+        id=uuid.uuid4(), storage_key="k", mime_type="application/pdf", status="queued"
+    )
+    document_repo = _FakeDocumentRepository(document)
+    chunk_repo = _FakeChunkRepository()
+    parser = _FakeParser(
+        result=ParsedText(
+            full_text="A meaningful paragraph about testing. " * 30,
+            page_breaks=None,
+            page_count=3,
+        )
+    )
+    _install_fake_parser(monkeypatch, parser)
+
+    service = DocumentProcessingService(
+        document_repo,
+        chunk_repo,
+        _FakeStorageProvider(b"%PDF-fake"),
+        _FailingEmbeddingProvider(),
+        ai_request_repo,
+    )
+
+    # RuntimeError is not a DocumentParseError, so it propagates (NFR-AVAIL-002
+    # — the worker's own retry mechanism handles it), but the failed embedding
+    # attempt must still have been logged before it did.
+    with pytest.raises(RuntimeError):
+        await service.process_document(user_id, document.id)
+
+    assert len(ai_request_repo.calls) == 1
+    call = ai_request_repo.calls[0]
+    assert call["user_id"] == user_id
+    assert call["operation"] == "embedding"
+    assert call["status"] == "error"
+    assert call["error_code"] == "embedding_failed"
+
+
+async def test_ai_request_logging_failure_does_not_affect_document_processing_outcome(
+    monkeypatch, embedding_provider
+):
+    """
+    A failure writing the observability row is best-effort (see
+    `DocumentProcessingService._log_ai_request`'s docstring) and must never
+    turn an otherwise-successful embedding/document-processing run into a
+    failure.
+    """
+    document = _FakeDocument(
+        id=uuid.uuid4(), storage_key="k", mime_type="application/pdf", status="queued"
+    )
+    document_repo = _FakeDocumentRepository(document)
+    chunk_repo = _FakeChunkRepository()
+    parser = _FakeParser(
+        result=ParsedText(
+            full_text="A meaningful paragraph about testing. " * 30,
+            page_breaks=None,
+            page_count=3,
+        )
+    )
+    _install_fake_parser(monkeypatch, parser)
+
+    service = DocumentProcessingService(
+        document_repo,
+        chunk_repo,
+        _FakeStorageProvider(b"%PDF-fake"),
+        embedding_provider,
+        _FakeAiRequestRepository(raise_on_create=True),
+    )
+
+    await service.process_document(document.id, document.id)  # must not raise
+
     assert document.status == "ready"
