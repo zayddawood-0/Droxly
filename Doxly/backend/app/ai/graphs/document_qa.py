@@ -4,7 +4,7 @@ from typing import Literal, TypedDict
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from app.ai.llm import LLMProvider, Message
+from app.ai.llm import Completion, LLMProvider, Message
 from app.services.citation_service import CitationInput
 from app.services.retrieval_service import AssembledContext, RetrievalService
 
@@ -40,6 +40,12 @@ class QAState(TypedDict, total=False):
     citations: list[CitationInput]
     status: Literal["success", "failed"]
     error: str | None
+    # R4 (tasks/remediation-plan.md) — additive: chat_service.py reuses
+    # these nodes directly and needs the provider's own real input/output
+    # token counts + model id for NFR-OBS-001's ai_requests logging,
+    # rather than re-estimating them. Never read by this graph itself.
+    classification_completion: Completion | None
+    generation_completion: Completion | None
 
 
 async def classifier_node(state: QAState, llm: LLMProvider) -> dict:
@@ -58,7 +64,7 @@ async def classifier_node(state: QAState, llm: LLMProvider) -> dict:
     intent: Intent = (
         "out_of_scope" if "out_of_scope" in completion.text.lower() else "factual_qa"
     )
-    return {"intent": intent}
+    return {"intent": intent, "classification_completion": completion}
 
 
 async def retriever_node(state: QAState, retrieval: RetrievalService) -> dict:
@@ -108,7 +114,7 @@ async def answer_generator_node(state: QAState, llm: LLMProvider) -> dict:
     completion = await llm.generate(
         messages, system_prompt=SYSTEM_PROMPT, model_tier="standard", max_tokens=1024
     )
-    return {"draft_answer": completion.text}
+    return {"draft_answer": completion.text, "generation_completion": completion}
 
 
 def citation_validator_node(state: QAState) -> dict:

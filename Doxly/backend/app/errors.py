@@ -253,3 +253,26 @@ class EmptyDocumentError(DoxlyError):
             f"Document {document_id} produced no chunks from its extracted text."
         )
         self.document_id = document_id
+
+
+# --- R4 (tasks/remediation-plan.md) — chat ---
+
+
+class DocumentNotReadyError(DoxlyError):
+    """409 — api.md §4: a document referenced by a conversation/message is
+    no longer `status=ready` (e.g., deleted or still processing mid-conversation).
+    Distinct error_code from R2's generic `not_ready` (api.md names this one
+    specifically for chat's endpoints)."""
+
+    status_code = 409
+    error_code = "document_not_ready"
+    default_message = "One of the referenced documents isn't ready yet."
+
+
+class MessageNotInProgressError(DoxlyError):
+    """409 — api.md's POST .../messages/{id}/stop: the message has already
+    completed or was never streaming."""
+
+    status_code = 409
+    error_code = "not_in_progress"
+    default_message = "This message isn't currently generating."

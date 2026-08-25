@@ -57,6 +57,7 @@ class Message(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "messages"
     __table_args__ = (
         CheckConstraint("role IN ('user','assistant','system')"),
+        CheckConstraint("status IN ('complete','stopped','incomplete')"),
         Index("ix_messages_conversation_created", "conversation_id", "created_at"),
     )
 
@@ -72,6 +73,10 @@ class Message(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     role: Mapped[str] = mapped_column(Text, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     token_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # R4 — tasks/remediation-plan.md — distinguishes a normally-completed
+    # assistant turn from one halted by /stop or a mid-stream failure
+    # (database.md §3.9's note on this column).
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="complete")
 
 
 class Citation(UUIDPrimaryKeyMixin, Base):

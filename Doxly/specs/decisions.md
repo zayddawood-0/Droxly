@@ -282,8 +282,29 @@ Per Section 37 of the initialization brief, every open question below has an exp
 
 ---
 
+## ADR-024: Chat stop-signal transport — Redis, not an in-process registry
+
+- **Decision:** `POST /chat/conversations/{id}/messages/{message_id}/stop` (`FR-AI-006`) signals an in-flight streaming turn via a short-TTL Redis key (`core/chat_stream_control.py`), keyed by the **user** message's id, polled by the streaming generator between generation steps and during the final chunk-relay — not a plain in-process `dict`/`asyncio.Event` registry.
+- **Context:** the API is required to be stateless and horizontally scalable (`NFR-SCALE-001`); a `/stop` request can land on a different replica than the one holding the in-flight generator's task, so any in-process signaling mechanism would silently fail to reach it whenever a deployment runs more than one API replica.
+- **Alternatives considered:** an in-process registry (rejected — correct only for a single-replica deployment, a silent trap the moment `NFR-SCALE-001` is actually exercised); a database row/flag (rejected — Redis is already the established low-latency, high-frequency-poll store for this kind of cross-request signal, per `ADR-008`/R1's rate limiter; a DB round-trip per poll would be needless extra load on Postgres for a purely ephemeral signal).
+- **Reason:** reuses the already-established Redis infrastructure (`decisions.md` ADR-008, R1's rate limiter) for exactly the kind of cheap, ephemeral, cross-replica coordination it's already used for, rather than inventing a new shared-state mechanism.
+- **Consequences:** fails open on a Redis outage (mirrors `ADR-021`/`ADR-023`) — `/stop` would report `409 not_in_progress` rather than actually stopping anything, a bounded, logged degradation rather than a request failure. `tasks/R4-chat.md` documents why the signal is keyed by the *user* message's id (matching `frontend/hooks/use-chat-stream.ts`'s already-built behavior) rather than an assistant message id that doesn't exist yet at the moment a user can click "stop."
+- **Status:** Decided.
+
+## ADR-025: Chat streaming answer generation — `LLMProvider.generate()`, not `.stream()`
+
+- **Decision:** `chat_service.py`'s Answer Generator step calls `LLMProvider.generate()` (single-shot, non-streamed) to obtain the complete answer, then chunks the *already citation-validated* final text word-by-word for the client-facing `event: token` stream — it does not call `LLMProvider.stream()` for the live provider-level token feed `ai.md` §2 describes as "used only by the inline chat path."
+- **Context:** `langgraph.md` §2's Citation Validator node explicitly "post-processes the **completed** answer" and forces the safe fallback response *after* generation if the answer is ungrounded (`ai.md` §8 point 1: checked "before a response is **returned**") — `FR-AI-004`'s absolute "no fabricated citation" guarantee (`ai.md` calls this "Doxly's core trust promise"). Relaying raw provider tokens live, before that check runs, would let an ungrounded answer reach the user before the safety net could apply, with no way to retract already-sent SSE events.
+- **Alternatives considered:** true live token relay via `.stream()`, buffering all tokens server-side before deciding whether to show them — rejected because `.stream()`'s `AsyncIterator[str]` interface carries no accompanying token/usage-count channel; getting `NFR-OBS-001`'s required accurate `input_tokens`/`output_tokens`/`model` would then require an approximate, self-computed token count (a strictly worse substitute for data the provider already returns for free via `generate()`'s `Completion`).
+- **Reason:** prioritizes the P0 anti-hallucination guarantee and P0 observability accuracy over literally satisfying `ai.md`'s abstract description of which method chat uses — both requirements are P0; the streaming *transport* to the browser (`FR-AI-005`, P1) is still fully satisfied via the chunked relay, which is observably indistinguishable to the client from true token streaming.
+- **Consequences:** `/stop` (`FR-AI-006`, P2) can only interrupt the chunk-relay phase, not the LLM call itself — accepted as a P2-vs-P0 trade-off, documented in `tasks/R4-chat.md`'s Known Limitations. `document_qa.py`'s `classifier_node`/`answer_generator_node` were extended (additively — see their own code comments) to also return the raw provider `Completion`, so this reuse needs no logic duplicated from the graph.
+- **Status:** Decided.
+
+---
+
 ## Changelog
 
+- **2026-08-26** — `ADR-024` (chat stop-signal transport) and `ADR-025` (chat streaming design: `generate()` not `.stream()`) added — `tasks/remediation-plan.md` R4.
 - **2026-08-25** — `ADR-022` (StorageProvider default implementation, backdated to R2) and `ADR-023` (document-processing enqueue fail-open, mirroring ADR-021) added — `tasks/remediation-plan.md` R3.
 - **2026-08-25** — `ADR-020` (EmailProvider abstraction) and `ADR-021` (rate-limiter Redis-unavailable fail-open) added — `tasks/remediation-plan.md` R1.
 - **2026-08-24** — `ADR-019` (CI/CD pipeline implementation) and `OQ-13` (container platform destination) added — `roadmap.md` Phase 18.

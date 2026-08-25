@@ -182,9 +182,12 @@ erDiagram
 | role | TEXT | NOT NULL, CHECK IN ('user','assistant','system') |
 | content | TEXT | NOT NULL |
 | token_count | INTEGER | NULL |
+| status | TEXT | NOT NULL DEFAULT 'complete', CHECK IN ('complete','stopped','incomplete') |
 | created_at | TIMESTAMPTZ | |
 
 **Indexes:** `(conversation_id, created_at)`.
+
+`status` — added at R4 (`tasks/remediation-plan.md`) implementation time: `api.md`'s `POST .../messages/{id}/stop` ("persisted... marked `status='stopped'`") and the chat SSE `error` event ("partial assistant output... persisted, flagged incomplete") both require distinguishing a normally-completed assistant turn from one that was user-stopped or cut short by a mid-stream failure — a distinction this table didn't yet have a column for. `'complete'` is the default for every message (user messages included, for schema uniformity; only assistant messages ever take the other two values in practice).
 
 ### 3.10 `citations`
 
