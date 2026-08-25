@@ -1,10 +1,12 @@
 # Doxly local development stack (specs/devops.md §1-2, decisions.md ADR-006/ADR-015).
 #
 # STILL INCOMPLETE BY DESIGN: `postgres` and `redis` are added here (Phase 3
-# needs a real Postgres+pgvector to run/test migrations against). `fastapi-app`
-# and `worker` are not added yet — no application logic exists for them to run
-# beyond the health check (exercised directly, not via Compose, for Phase 3's
-# verification) — they arrive with Phase 2/5's actual routers and job consumer.
+# needs a real Postgres+pgvector to run/test migrations against). `worker`
+# is added by R3 (tasks/remediation-plan.md) now that a real RQ job
+# entrypoint exists (app/workers/document_processing_worker.py). A
+# `fastapi-app` service is still NOT added — that gap predates R3 (R1/R2
+# never added one either) and remains out of this task's scope; the backend
+# is run directly (uvicorn) rather than via Compose until that's addressed.
 
 services:
   frontend:
@@ -48,6 +50,27 @@ services:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+
+  worker:
+    # tasks/remediation-plan.md R3 — the RQ consumer for
+    # decisions.md ADR-008's document-processing queue (app/core/queue.py's
+    # `document_processing` queue, app/workers/document_processing_worker.py's
+    # job entrypoint). Same image as the backend (architecture.md §2.3:
+    # "same codebase, same dependency layer — differing only in the
+    # container's entrypoint command") — no separate Dockerfile.
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["rq", "worker", "document_processing", "--url", "redis://redis:6379"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://doxly:doxly@postgres:5432/doxly
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    init: true
 
 volumes:
   doxly-postgres-data:

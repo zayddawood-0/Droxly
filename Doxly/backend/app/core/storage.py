@@ -65,9 +65,20 @@ class StorageProvider(ABC):
     @abstractmethod
     async def read_object_text(self, key: str) -> str:
         """Reads the full object as UTF-8 text — used only by R2's own
-        confirm-time text-decodability check for TXT/CSV and, until R3's
-        real parsing pipeline exists, is NOT how document content
-        eventually reaches document_chunks (that's the worker's job)."""
+        confirm-time text-decodability check for TXT/CSV; not how document
+        content reaches document_chunks (that's read_object_bytes + the
+        R3 parsing pipeline's job)."""
+
+    @abstractmethod
+    async def read_object_bytes(self, key: str) -> bytes:
+        """
+        tasks/remediation-plan.md R3 — the raw bytes a `DocumentParser`
+        parses (document-processing.md §7: "the worker downloads the raw
+        file into ephemeral memory... for the duration of parsing only").
+        Promoted from a `LocalFilesystemStorageProvider`-only helper (R2) to
+        a real abstract method here: every future cloud provider needs this
+        exact capability too, not just the local dev/test one.
+        """
 
     @abstractmethod
     async def delete_object(self, key: str) -> None: ...
@@ -126,6 +137,9 @@ class LocalFilesystemStorageProvider(StorageProvider):
     async def read_object_text(self, key: str) -> str:
         return self._path_for(key).read_text(encoding="utf-8")
 
+    async def read_object_bytes(self, key: str) -> bytes:
+        return self._path_for(key).read_bytes()
+
     async def delete_object(self, key: str) -> None:
         path = self._path_for(key)
         path.unlink(missing_ok=True)
@@ -135,13 +149,10 @@ class LocalFilesystemStorageProvider(StorageProvider):
     # all — the browser talks to it directly). Used exclusively by
     # api/v1/routers/local_storage.py, the dev/test stand-in receiving
     # endpoint for this provider's own presigned URLs, and by tests that
-    # need to seed/inspect local-storage objects directly. ---
+    # need to seed local-storage objects directly. ---
 
     def write_object(self, key: str, data: bytes) -> None:
         self._path_for(key).write_bytes(data)
-
-    def read_object_bytes(self, key: str) -> bytes:
-        return self._path_for(key).read_bytes()
 
 
 _provider_singleton: StorageProvider | None = None

@@ -215,6 +215,29 @@ class DocumentChunkRepository(TenantScopedRepository[DocumentChunk]):
             ChunkSearchResult(chunk=row[0], similarity=row[1]) for row in result.all()
         ]
 
+    async def delete_for_document(
+        self, user_id: uuid.UUID, document_id: uuid.UUID
+    ) -> int:
+        """
+        R3 — FR-PROC-005/NFR-AVAIL-002: clears every chunk row for a
+        document before a (re)processing run writes a fresh set, so neither
+        a manual reprocess nor an automatic retry after a partial failure
+        ever leaves stale/duplicate rows behind (the (document_id,
+        chunk_index) unique constraint would otherwise reject a retry's
+        second bulk_create). Owner-scoped like every other write here.
+        """
+        result = await self.session.execute(
+            delete(DocumentChunk).where(
+                DocumentChunk.user_id == user_id,
+                DocumentChunk.document_id == document_id,
+            )
+        )
+        await self.session.flush()
+        # SQLAlchemy's async execute() is typed as the generic Result[Any];
+        # .rowcount is real on the CursorResult a DELETE actually returns
+        # at runtime, just not part of that generic type's static surface.
+        return result.rowcount or 0  # type: ignore[attr-defined]
+
     async def list_for_document(
         self, user_id: uuid.UUID, document_id: uuid.UUID
     ) -> list[DocumentChunk]:

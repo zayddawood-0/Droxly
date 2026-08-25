@@ -46,6 +46,27 @@ dependencies = [
   # extra (schemas/auth.py, schemas/user.py) — not bundled with pydantic
   # itself.
   "email-validator>=2.2",
+  # rq: decisions.md ADR-008's background job queue (document processing,
+  # embedding generation) — Redis-backed, actually wired up in R3
+  # (tasks/remediation-plan.md); reuses the same Redis instance rate
+  # limiting already depends on.
+  "rq>=1.16",
+  # pypdf/pdfplumber: decisions.md ADR-014's PDF extraction pair — pypdf for
+  # structure/metadata (encryption detection), pdfplumber for the primary
+  # text-extraction path (better layout fidelity for multi-column content).
+  "pypdf>=5.1",
+  "pdfplumber>=0.11",
+  # python-docx: decisions.md ADR-014's DOCX extraction library.
+  "python-docx>=1.1",
+  # pandas: decisions.md ADR-014's CSV extraction library (robust
+  # dialect/type inference); the stdlib csv module (already available) is
+  # the documented lightweight fallback for small/edge-case files.
+  "pandas>=2.2",
+  # charset-normalizer: decisions.md ADR-014's TXT-parser encoding-detection
+  # fallback for files that fail a plain UTF-8 decode (document-processing.md
+  # §3.3) — declared explicitly rather than relied on as some other
+  # dependency's transitive pin.
+  "charset-normalizer>=3.3",
 ]
 
 [project.optional-dependencies]

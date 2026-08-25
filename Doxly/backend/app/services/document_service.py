@@ -8,6 +8,7 @@ import hashlib
 import uuid
 from collections.abc import Sequence
 
+from app.core.queue import enqueue_document_processing
 from app.core.storage import (
     ObjectMetadata,
     PresignedDownload,
@@ -143,11 +144,11 @@ class DocumentService:
                 user_id, storage_used_bytes=user.storage_used_bytes + actual_size
             )
 
-        # FR-PROC-001's trigger ("enqueues process_document") needs the RQ
-        # worker/queue infrastructure that roadmap.md Phase 5/8 (R3) hasn't
-        # built yet — documented gap, not silently assumed done. The
-        # document is left in `queued`, which is already correct/honest:
-        # nothing is actually processing it yet in this environment.
+        # FR-PROC-001's trigger — R3's worker/queue infrastructure now
+        # exists; enqueue_document_processing fails open (decisions.md
+        # ADR-023) rather than turning a transient Redis outage into a
+        # failed upload confirmation.
+        enqueue_document_processing(user_id, document.id)
         return document
 
     def _verify_upload_matches_declaration(
@@ -162,15 +163,13 @@ class DocumentService:
             raise UploadMismatchError()
 
     async def _compute_checksum(self, storage_key: str) -> str:
-        # LocalFilesystemStorageProvider-only path today (R2's only real
-        # StorageProvider) — a real cloud provider would expose a
-        # server-side checksum/ETag instead of requiring a full read; that
-        # optimization is deferred to whichever future task adds a real
-        # cloud StorageProvider (decisions.md ADR-022), not invented here.
-        from app.core.storage import LocalFilesystemStorageProvider
-
-        assert isinstance(self.storage_provider, LocalFilesystemStorageProvider)
-        data = self.storage_provider.read_object_bytes(storage_key)
+        # A real cloud provider would expose a server-side checksum/ETag
+        # instead of requiring a full read; that optimization is deferred to
+        # whichever future task adds a real cloud StorageProvider
+        # (decisions.md ADR-022), not invented here. read_object_bytes is a
+        # real StorageProvider ABC method (R3 — every provider needs it for
+        # the parsing pipeline, not just this checksum computation).
+        data = await self.storage_provider.read_object_bytes(storage_key)
         return hashlib.sha256(data).hexdigest()
 
     # --- FR-DOC-002 ---
@@ -238,11 +237,22 @@ class DocumentService:
             import csv
             import io
 
-            full_text = "\n".join(chunk.content for chunk in chunks)
-            reader = csv.reader(io.StringIO(full_text))
-            rows_raw = list(reader)
-            columns = rows_raw[0] if rows_raw else []
-            rows = [dict(zip(columns, row, strict=False)) for row in rows_raw[1:]]
+            # R3 (chunking.chunk_csv_rows) repeats the header row inside
+            # EVERY chunk's stored content (rag.md §2), so — unlike the
+            # other formats — chunks can't just be joined into one blob and
+            # parsed once; each chunk is parsed independently and only its
+            # data rows (not its repeated header) are accumulated.
+            columns: list[str] = []
+            rows: list[dict] = []
+            for chunk in chunks:
+                chunk_rows = list(csv.reader(io.StringIO(chunk.content)))
+                if not chunk_rows:
+                    continue
+                if not columns:
+                    columns = chunk_rows[0]
+                rows.extend(
+                    dict(zip(columns, row, strict=False)) for row in chunk_rows[1:]
+                )
             return {"rows": rows, "columns": columns}
 
         # PDF/DOCX — page-oriented.
@@ -315,14 +325,13 @@ class DocumentService:
 
         # "prior chunks/embeddings for the document are discarded and
         # replaced, not appended" (api.md).
-        existing_chunks = await self.chunk_repo.list_for_document(user_id, document_id)
-        for chunk in existing_chunks:
-            await self.chunk_repo.session.delete(chunk)
+        await self.chunk_repo.delete_for_document(user_id, document_id)
 
         updated = await self.document_repo.set_status(
             user_id, document_id, status="queued", processing_error=None
         )
         assert updated is not None
+        enqueue_document_processing(user_id, document_id)
         return updated
 
     # --- FR-DOC-008 ---

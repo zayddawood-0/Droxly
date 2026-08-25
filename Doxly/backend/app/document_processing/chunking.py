@@ -141,8 +141,15 @@ def _trailing_overlap(previous: list[_Span]) -> tuple[list[_Span], int]:
 
 
 def _page_number_at(offset: int, page_breaks: list[int] | None) -> int | None:
-    """The page a chunk *starts* on (rag.md §2) — 1-indexed."""
-    if not page_breaks:
+    """
+    The page a chunk *starts* on (rag.md §2) — 1-indexed. `page_breaks is
+    None` means no page concept applies at all (DOCX/TXT). `page_breaks ==
+    []` is different — a single-page PDF (R3's PdfParser) legitimately
+    records zero *breaks* while every chunk is still on page 1; treating an
+    empty list the same as None here would silently drop page 1 attribution
+    for every single-page PDF.
+    """
+    if page_breaks is None:
         return None
     page = 1
     for break_offset in page_breaks:
@@ -167,6 +174,87 @@ def _split_with_offsets(
     if tail.strip():
         pieces.append((tail, base_offset + cursor, base_offset + len(text)))
     return pieces
+
+
+def chunk_csv_rows(header: list[str], rows: list[dict[str, str]]) -> list[TextChunk]:
+    """
+    rag.md §2 — "CSV documents are chunked by logical row groups (not raw
+    character windows) — a chunk contains a coherent set of rows (with the
+    header repeated per chunk for context) rather than an arbitrary
+    character slice that could bisect a row." Packs whole rows into groups
+    up to TARGET_MAX_TOKENS (reusing the same budget the prose path targets,
+    rather than an arbitrary fixed row count) — a row is never split.
+
+    `char_start`/`char_end` track offsets into the canonical, non-repeated
+    row-serialized text (header appears once, conceptually, at the start of
+    that canonical text) rather than into each chunk's own repeated-header
+    `content` string, so the offsets stay meaningful positions within the
+    source data even though `content` itself repeats the header for
+    per-chunk readability. No overlap between row groups (unlike prose
+    chunking) — rows aren't narratively continuous, and the repeated header
+    already supplies context; duplicating rows across chunks would only
+    risk duplicate retrieval hits.
+
+    An empty `rows` list yields zero chunks — the same degenerate-input
+    contract `chunk_text` follows (rag.md §2), routed by the caller to
+    FR-PROC-004's failure handling.
+    """
+    if not rows:
+        return []
+
+    header_line = ",".join(header)
+    header_tokens = count_tokens(header_line)
+
+    def row_line(row: dict[str, str]) -> str:
+        return ",".join(str(row.get(col, "")) for col in header)
+
+    row_lines = [row_line(row) for row in rows]
+    row_tokens = [count_tokens(line) for line in row_lines]
+
+    row_offsets: list[tuple[int, int]] = []
+    cursor = 0
+    for line in row_lines:
+        start = cursor
+        cursor += len(line)
+        row_offsets.append((start, cursor))
+        cursor += 1  # newline separator between rows in the canonical text
+
+    chunks: list[TextChunk] = []
+    group_start = 0
+    group_tokens = header_tokens
+    for i in range(len(row_lines)):
+        if i > group_start and group_tokens + row_tokens[i] > TARGET_MAX_TOKENS:
+            _flush_csv_group(
+                chunks, header_line, row_lines, row_offsets, group_start, i
+            )
+            group_start = i
+            group_tokens = header_tokens
+        group_tokens += row_tokens[i]
+    _flush_csv_group(
+        chunks, header_line, row_lines, row_offsets, group_start, len(row_lines)
+    )
+    return chunks
+
+
+def _flush_csv_group(
+    chunks: list[TextChunk],
+    header_line: str,
+    row_lines: list[str],
+    row_offsets: list[tuple[int, int]],
+    start: int,
+    end: int,
+) -> None:
+    content = "\n".join([header_line, *row_lines[start:end]])
+    chunks.append(
+        TextChunk(
+            chunk_index=len(chunks),
+            content=content,
+            char_start=row_offsets[start][0],
+            char_end=row_offsets[end - 1][1],
+            token_count=count_tokens(content),
+            page_number=None,
+        )
+    )
 
 
 def _hard_split(text: str, base_offset: int) -> list[_Span]:

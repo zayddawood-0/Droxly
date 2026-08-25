@@ -1,7 +1,8 @@
 import asyncio
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 
+import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -61,6 +62,29 @@ async def _reset_rate_limit_state() -> AsyncIterator[None]:
     await _clear()
     yield
     await _clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_document_processing_queue() -> Iterator[None]:
+    """
+    tasks/remediation-plan.md R3 — app/core/queue.py's RQ queue is real,
+    unmocked Redis (matching this suite's existing rate-limit-fixture
+    convention above, not a fake/in-memory queue) so tests exercise the
+    actual enqueue call `DocumentService.confirm_upload`/`reprocess_document`
+    make. Nothing in this test suite runs an `rq worker` process to consume
+    jobs, so left-over queue/job keys would otherwise accumulate across
+    runs — cleared the same targeted way (`rq:*` keys this app itself
+    writes, not a blanket FLUSHDB) as the rate-limiter's `rl:*` cleanup.
+    """
+    from app.core.queue import redis_connection
+
+    def _clear() -> None:
+        for key in redis_connection.scan_iter(match="rq:*"):
+            redis_connection.delete(key)
+
+    _clear()
+    yield
+    _clear()
 
 
 @pytest_asyncio.fixture

@@ -180,6 +180,22 @@ Per Section 37 of the initialization brief, every open question below has an exp
 - **Consequences:** Every Redis-unavailable event logs a warning (`rate_limit.redis_unavailable`) so an outage is operationally visible even though it isn't user-visible; `observability.md`'s eventual alerting setup (R12) should alert on this log event specifically, since it marks a period of reduced abuse protection.
 - **Status:** Decided.
 
+## ADR-022: StorageProvider default implementation — local filesystem, backdated
+
+- **Decision:** `LocalFilesystemStorageProvider` (`backend/app/core/storage.py`) is the active `StorageProvider` implementation until real cloud storage credentials are configured (`storage_provider` setting), writing uploaded bytes to local disk and serving "presigned" URLs via a small local-only receiving endpoint (`api/v1/routers/local_storage.py`) that stands in for a real provider's presigned-URL mechanism in dev/test. `ADR-009` already decided the *mechanism* (presigned URLs, direct-to-storage upload); this entry records the concrete default *implementation* that mechanism runs against today, mirroring the same "real, working local default until a real credential is supplied" pattern already used for `LLMProvider`/`EmbeddingProvider`/`EmailProvider`.
+- **Context:** R2's own code comments (`core/storage.py`) have referenced this ADR number since R2 landed; it was never actually written down — a documentation gap this task (R3) closes while already editing this file for `ADR-023`, rather than leaving a dangling cross-reference. Not an R3 architectural decision itself — backdated to R2, where the actual choice was made.
+- **Reason:** A real, working filesystem-backed implementation (not a mock) lets the full upload → confirm → **process** pipeline run end-to-end in local dev/CI without any cloud account, while keeping FastAPI's own request handlers untouched by the actual file bytes either way (the local receiving endpoint plays the browser-facing role a cloud provider's own presigned endpoint would).
+- **Status:** Decided (documentation backdated); cloud provider choice remains **Open**, see `OQ-04`.
+
+## ADR-023: Document-processing enqueue failure mode — fail open, mirroring ADR-021
+
+- **Decision:** `backend/app/core/queue.py`'s `enqueue_document_processing` **fails open** on a Redis connection error — the confirm-upload/reprocess request still succeeds (the document is left `queued`, a warning is logged) rather than the request failing with a `500`.
+- **Context:** `ADR-008` decided RQ/Redis as the queue mechanism but never addressed what happens if enqueuing itself fails at the moment `DocumentService.confirm_upload`/`reprocess_document` calls it — a gap in the same shape `ADR-021` already resolved for the rate limiter, surfaced here as R3 (`tasks/remediation-plan.md`) actually wires the enqueue call up for the first time.
+- **Alternatives considered:** **Fail closed** (reject the confirm/reprocess request with a `5xx` if Redis is unreachable) — rejected for the same reason `ADR-021` rejected it for rate limiting: a transient Redis outage would otherwise take down document uploads entirely, contradicting `NFR-AVAIL-001`.
+- **Reason:** A document left `queued` with no job enqueued is a bounded, operationally-visible gap (the logged warning) rather than a user-facing failure of an otherwise-successful upload; a human/alert can notice the warning and manually trigger `POST /documents/{id}/reprocess` once Redis recovers, which re-enqueues cleanly (`FR-PROC-005`).
+- **Consequences:** No automatic re-enqueue exists for a document stuck `queued` due to a missed enqueue — recovery is manual (`reprocess`) or a future operational job (not built by this task). `observability.md`'s eventual alerting (R12) should alert on the `document_processing.enqueue_failed` log event, the same way it's expected to alert on `rate_limit.redis_unavailable`.
+- **Status:** Decided.
+
 ---
 
 ## Open Questions (assumptions made to unblock the spec — flagged for product/business confirmation)
@@ -268,6 +284,7 @@ Per Section 37 of the initialization brief, every open question below has an exp
 
 ## Changelog
 
+- **2026-08-25** — `ADR-022` (StorageProvider default implementation, backdated to R2) and `ADR-023` (document-processing enqueue fail-open, mirroring ADR-021) added — `tasks/remediation-plan.md` R3.
 - **2026-08-25** — `ADR-020` (EmailProvider abstraction) and `ADR-021` (rate-limiter Redis-unavailable fail-open) added — `tasks/remediation-plan.md` R1.
 - **2026-08-24** — `ADR-019` (CI/CD pipeline implementation) and `OQ-13` (container platform destination) added — `roadmap.md` Phase 18.
 - **2026-08-19** — Initial ADR set and open-question defaults established during SDD initialization.

@@ -95,6 +95,17 @@ def test_page_number_is_none_when_no_page_breaks_are_given():
     assert all(c.page_number is None for c in chunks)
 
 
+def test_page_number_is_one_for_a_single_page_pdf_with_zero_breaks():
+    """
+    tasks/remediation-plan.md R3 regression — a single-page PDF (R3's
+    PdfParser) passes page_breaks=[] (zero breaks recorded, not None); this
+    must still attribute every chunk to page 1, not be treated the same as
+    "no page concept at all" (page_breaks=None, the DOCX/TXT case above).
+    """
+    chunks = chunk_text("Some content. " * 100, page_breaks=[])
+    assert all(c.page_number == 1 for c in chunks)
+
+
 def test_count_tokens_matches_the_chunker_s_own_measurement():
     text = "A short piece of text for token counting."
     assert count_tokens(text) > 0
