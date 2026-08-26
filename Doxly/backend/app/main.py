@@ -6,7 +6,15 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
-from app.api.v1.routers import auth, chat, documents, extractions, local_storage, users
+from app.api.v1.routers import (
+    auth,
+    chat,
+    comparisons,
+    documents,
+    extractions,
+    local_storage,
+    users,
+)
 from app.core.config import settings
 from app.core.database import engine
 from app.errors import DoxlyError, RequestValidationFailedError
@@ -20,6 +28,7 @@ app.include_router(documents.tags_router, prefix="/api/v1")
 app.include_router(chat.router, prefix="/api/v1")
 app.include_router(extractions.router, prefix="/api/v1")
 app.include_router(extractions.document_extractions_router, prefix="/api/v1")
+app.include_router(comparisons.router, prefix="/api/v1")
 
 if settings.storage_provider == "local":
     # tasks/remediation-plan.md R2 — dev/test-only stand-in for the real

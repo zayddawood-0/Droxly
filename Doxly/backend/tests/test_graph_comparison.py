@@ -14,13 +14,24 @@ def _thread_config():
     return {"configurable": {"thread_id": str(uuid.uuid4())}}
 
 
+def _segments(*contents: str, start_page: int = 1) -> list[dict]:
+    return [
+        {"content": content, "page_number": start_page + i}
+        for i, content in enumerate(contents)
+    ]
+
+
 def _base_state(**overrides):
+    text_a = "The invoice total is $100. Payment is due within 30 days of receipt."
+    text_b = "The invoice total is $150. Payment is due within 30 days of receipt."
     state = {
         "user_id": uuid.uuid4(),
         "document_a_id": uuid.uuid4(),
         "document_b_id": uuid.uuid4(),
-        "text_a": "The invoice total is $100. Payment is due within 30 days of receipt.",
-        "text_b": "The invoice total is $150. Payment is due within 30 days of receipt.",
+        "text_a": text_a,
+        "text_b": text_b,
+        "segments_a": _segments(text_a),
+        "segments_b": _segments(text_b),
     }
     state.update(overrides)
     return state
@@ -56,18 +67,29 @@ async def test_graph_detects_and_classifies_a_numeric_change():
     assert result["degraded"] is False
     assert result["alignment_confidence"] >= ALIGNMENT_CONFIDENCE_THRESHOLD
     assert len(result["classified_changes"]) == 1
-    assert result["classified_changes"][0].category == "numeric"
+    change = result["classified_changes"][0]
+    assert change.category == "numeric"
+    # R6 compatibility fix — page numbers threaded through from the
+    # page-tagged input segments, not left null when real data exists.
+    assert change.page_a == 1
+    assert change.page_b == 1
 
 
 async def test_graph_degrades_gracefully_for_structurally_unrelated_documents():
     """FR-COMP-003 — a success path, not a failure, when alignment isn't meaningful."""
     llm = FakeLLMProvider()
+    text_a = (
+        "A resume describing five years of backend software engineering experience."
+    )
+    text_b = "A recipe for baking chocolate chip cookies with butter and sugar."
     graph = build_comparison_graph(llm, FakeEmbeddingProvider())
 
     result = await graph.ainvoke(
         _base_state(
-            text_a="A resume describing five years of backend software engineering experience.",
-            text_b="A recipe for baking chocolate chip cookies with butter and sugar.",
+            text_a=text_a,
+            text_b=text_b,
+            segments_a=_segments(text_a),
+            segments_b=_segments(text_b),
         ),
         config=_thread_config(),
     )
@@ -84,7 +106,9 @@ async def test_graph_fails_when_a_document_has_no_extractable_text():
     llm = FakeLLMProvider()
     graph = build_comparison_graph(llm, FakeEmbeddingProvider())
 
-    result = await graph.ainvoke(_base_state(text_a="   "), config=_thread_config())
+    result = await graph.ainvoke(
+        _base_state(text_a="   ", segments_a=[]), config=_thread_config()
+    )
 
     assert result["status"] == "failed"
     assert "extractable text" in result["error"]
@@ -92,26 +116,23 @@ async def test_graph_fails_when_a_document_has_no_extractable_text():
 
 async def test_unmatched_segments_become_additions_without_an_llm_call():
     llm = FakeLLMProvider(
-        structured_responses=[ClassifiedDifferences(categories=["structural"])]
+        structured_responses=[ClassifiedDifferences(categories=["wording"])]
     )
     graph = build_comparison_graph(llm, FakeEmbeddingProvider())
 
-    # shared_paragraph alone is already near the chunker's ~800-token
-    # ceiling, so appending new_section forces a clean split at the
-    # paragraph boundary (no content mixing) — otherwise the chunker packs
-    # both into one chunk, diluting the match and this test's premise along
-    # with it (a real failure mode caught while first writing this test).
-    shared_paragraph = (
-        "A shared opening paragraph about the project scope and goals. " * 100
-    )
-    new_section = "This is an entirely new closing section with fresh content. " * 100
+    shared = "A shared opening paragraph about the project scope and goals."
+    new_section = "This is an entirely new closing section with fresh content."
     result = await graph.ainvoke(
         _base_state(
-            text_a=shared_paragraph,
-            text_b=shared_paragraph + "\n\n" + new_section,
+            text_a=shared,
+            text_b=shared + "\n\n" + new_section,
+            segments_a=_segments(shared),
+            segments_b=_segments(shared, new_section),
         ),
         config=_thread_config(),
     )
 
     assert result["status"] == "success"
-    assert any(d.type == "addition" for d in result["classified_changes"])
+    additions = [d for d in result["classified_changes"] if d.type == "addition"]
+    assert len(additions) == 1
+    assert additions[0].page_b == 2

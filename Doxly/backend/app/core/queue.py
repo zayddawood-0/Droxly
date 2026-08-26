@@ -107,3 +107,32 @@ def enqueue_extraction(user_id: uuid.UUID, extraction_id: uuid.UUID) -> None:
             "extraction.enqueue_failed",
             extra={"user_id": str(user_id), "extraction_id": str(extraction_id)},
         )
+
+
+# --- R6 (tasks/remediation-plan.md) — comparison ---
+
+COMPARISON_QUEUE_NAME = "comparison"
+
+
+def get_comparison_queue() -> Queue:
+    return Queue(COMPARISON_QUEUE_NAME, connection=redis_connection)
+
+
+def enqueue_comparison(user_id: uuid.UUID, comparison_id: uuid.UUID) -> None:
+    """FR-COMP-001's trigger — mirrors `enqueue_extraction`'s exact shape
+    (same job-level `Retry`/`on_failure` resilience, same ADR-023 fail-open
+    behavior on a Redis outage)."""
+    try:
+        queue = get_comparison_queue()
+        queue.enqueue(
+            "app.workers.comparison_worker.run_comparison_job",
+            str(user_id),
+            str(comparison_id),
+            retry=Retry(max=_MAX_RETRIES, interval=_RETRY_INTERVALS_SECONDS),
+            on_failure=Callback("app.workers.comparison_worker.on_comparison_failure"),
+        )
+    except redis.RedisError:
+        logger.warning(
+            "comparison.enqueue_failed",
+            extra={"user_id": str(user_id), "comparison_id": str(comparison_id)},
+        )

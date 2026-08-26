@@ -295,3 +295,23 @@ class UnknownExtractionFieldError(DoxlyError):
     default_message = (
         "One or more corrected fields aren't part of this extraction's schema."
     )
+
+
+# --- R6 (tasks/remediation-plan.md) — comparison ---
+
+
+class IdenticalDocumentsError(DoxlyError):
+    """
+    422 — api.md's POST /comparisons: `document_a_id == document_b_id`
+    (mirrors `comparisons`' own `CHECK (document_a_id <> document_b_id)`,
+    `database.md` §3.12). Expressible purely from the request body's own
+    shape (skills/backend.md §9 would normally put this in a Pydantic
+    `model_validator`), but api.md names a *specific* error code
+    (`identical_documents`) rather than the generic `validation_error` a
+    Pydantic-layer check would produce — the same documented exception to
+    the usual heuristic `UnsupportedMimeTypeError` already establishes.
+    """
+
+    status_code = 422
+    error_code = "identical_documents"
+    default_message = "The two documents to compare must be different."

@@ -115,6 +115,9 @@ async def test_list_templates_returns_the_four_named_presets_with_full_metadata(
 async def test_list_templates_requires_auth(client):
     response = await client.get("/api/v1/extractions/templates")
     assert response.status_code == 401
+    body = response.json()
+    assert body["error"]["code"] == "unauthorized"
+    assert "request_id" in body["error"]
 
 
 # --- POST /extractions ---
@@ -212,6 +215,7 @@ async def test_create_extraction_rejects_generic_as_a_template_key(client, db_se
         headers=auth_cookie_headers(user.id),
     )
     assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
 
 
 async def test_create_extraction_404s_for_a_document_that_does_not_exist(
@@ -238,6 +242,7 @@ async def test_create_extraction_404s_for_another_users_document(client, db_sess
         headers=auth_cookie_headers(attacker.id),
     )
     assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
 
 
 async def test_create_extraction_409s_when_document_is_not_ready(client, db_session):
@@ -285,6 +290,7 @@ async def test_create_extraction_requires_auth(client, db_session):
         json={"document_id": str(uuid.uuid4()), "template_key": "invoice"},
     )
     assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthorized"
 
 
 # --- GET /extractions/{id} ---
@@ -335,11 +341,13 @@ async def test_get_extraction_404s_for_missing_or_other_users_extraction(
         f"/api/v1/extractions/{uuid.uuid4()}", headers=auth_cookie_headers(owner.id)
     )
     assert missing.status_code == 404
+    assert missing.json()["error"]["code"] == "not_found"
 
     cross_tenant = await client.get(
         f"/api/v1/extractions/{extraction.id}", headers=auth_cookie_headers(attacker.id)
     )
     assert cross_tenant.status_code == 404
+    assert cross_tenant.json()["error"]["code"] == "not_found"
 
 
 # --- GET /documents/{document_id}/extractions ---
@@ -382,6 +390,7 @@ async def test_list_document_extractions_404s_for_another_users_document(
         headers=auth_cookie_headers(attacker.id),
     )
     assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
 
 
 # --- PATCH /extractions/{id} ---
@@ -440,6 +449,7 @@ async def test_patch_extraction_404s_for_another_users_extraction(client, db_ses
         headers=auth_cookie_headers(attacker.id),
     )
     assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
 
     unchanged = await ExtractionRepository(db_session).get(owner.id, extraction.id)
     by_field = {item["field"]: item for item in unchanged.result_json}
