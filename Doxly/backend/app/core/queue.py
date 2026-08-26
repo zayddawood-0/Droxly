@@ -136,3 +136,32 @@ def enqueue_comparison(user_id: uuid.UUID, comparison_id: uuid.UUID) -> None:
             "comparison.enqueue_failed",
             extra={"user_id": str(user_id), "comparison_id": str(comparison_id)},
         )
+
+
+# --- R7 (tasks/remediation-plan.md) — summarization ---
+
+SUMMARY_QUEUE_NAME = "summary"
+
+
+def get_summary_queue() -> Queue:
+    return Queue(SUMMARY_QUEUE_NAME, connection=redis_connection)
+
+
+def enqueue_summary(user_id: uuid.UUID, summary_id: uuid.UUID) -> None:
+    """FR-SUM-001's trigger — mirrors `enqueue_comparison`'s exact shape
+    (same job-level `Retry`/`on_failure` resilience, same ADR-023 fail-open
+    behavior on a Redis outage)."""
+    try:
+        queue = get_summary_queue()
+        queue.enqueue(
+            "app.workers.summary_worker.run_summary_job",
+            str(user_id),
+            str(summary_id),
+            retry=Retry(max=_MAX_RETRIES, interval=_RETRY_INTERVALS_SECONDS),
+            on_failure=Callback("app.workers.summary_worker.on_summary_failure"),
+        )
+    except redis.RedisError:
+        logger.warning(
+            "summary.enqueue_failed",
+            extra={"user_id": str(user_id), "summary_id": str(summary_id)},
+        )

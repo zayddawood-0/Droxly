@@ -14,7 +14,8 @@ precedent this task does not retroactively change (out of scope), but does
 not repeat here either: `difference_detection_node` can make many real
 `generate()` calls in a single comparison (one per modified segment), so
 collapsing them into a single logged row would be far lossier here than it
-already is for chat/extraction. `_ObservedLLMProvider`/
+already is for chat/extraction. `ObservedLLMProvider` (`app/ai/
+observed_llm_provider.py`, shared with R7's `SummaryProcessingService`) and
 `_ObservedEmbeddingProvider` below wrap the real providers so every actual
 call — however many a run makes — writes its own row, without threading an
 `AiRequestRepository` through every graph node function individually.
@@ -24,20 +25,14 @@ import logging
 import time
 import uuid
 
-from pydantic import BaseModel
-
 from app.ai.embeddings import EmbeddingProvider
 from app.ai.graphs.comparison import (
     ComparisonState,
     DocumentSegment,
     build_comparison_graph,
 )
-from app.ai.llm import (
-    Completion,
-    LLMProvider,
-    StructuredCompletion,
-    StructuredOutputError,
-)
+from app.ai.llm import LLMProvider
+from app.ai.observed_llm_provider import ObservedLLMProvider
 from app.document_processing.chunking import count_tokens
 from app.repositories.comparison_repository import ComparisonRepository
 from app.repositories.document_repository import DocumentChunkRepository
@@ -68,132 +63,6 @@ EMPTY_COMPARISON_RESULT: dict = {
     "deletions": [],
     "modifications": [],
 }
-
-
-class _ObservedLLMProvider(LLMProvider):
-    """Wraps a real `LLMProvider` so every `generate()`/`generate_structured()`
-    call writes its own `ai_requests` row — see module docstring."""
-
-    def __init__(
-        self,
-        llm: LLMProvider,
-        ai_request_repo: AiRequestRepository,
-        user_id: uuid.UUID,
-    ) -> None:
-        self._llm = llm
-        self._ai_request_repo = ai_request_repo
-        self._user_id = user_id
-        self.provider_name = llm.provider_name
-
-    async def generate(
-        self,
-        messages,
-        *,
-        system_prompt: str,
-        model_tier,
-        max_tokens: int = 1024,
-        temperature: float = 0.0,
-    ) -> Completion:
-        start = time.monotonic()
-        try:
-            completion = await self._llm.generate(
-                messages,
-                system_prompt=system_prompt,
-                model_tier=model_tier,
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
-        except Exception:
-            await self._log(
-                status="error",
-                error_code="generation_failed",
-                input_tokens=None,
-                output_tokens=None,
-                model="n/a",
-                latency_ms=int((time.monotonic() - start) * 1000),
-            )
-            raise
-        await self._log(
-            status="success",
-            error_code=None,
-            input_tokens=completion.input_tokens,
-            output_tokens=completion.output_tokens,
-            model=completion.model,
-            latency_ms=int((time.monotonic() - start) * 1000),
-        )
-        return completion
-
-    def stream(
-        self, messages, *, system_prompt: str, model_tier, max_tokens: int = 1024
-    ):
-        # Not used by any background-worker graph (ai.md §2: "used only by
-        # the inline chat path") — delegated unchanged, not itself observed,
-        # matching this provider's sole real use here.
-        return self._llm.stream(
-            messages,
-            system_prompt=system_prompt,
-            model_tier=model_tier,
-            max_tokens=max_tokens,
-        )
-
-    async def generate_structured[T: BaseModel](
-        self, messages, *, system_prompt: str, output_schema: type[T], model_tier
-    ) -> StructuredCompletion[T]:
-        start = time.monotonic()
-        try:
-            completion = await self._llm.generate_structured(
-                messages,
-                system_prompt=system_prompt,
-                output_schema=output_schema,
-                model_tier=model_tier,
-            )
-        except StructuredOutputError as exc:
-            await self._log(
-                status="error",
-                error_code="structured_output_failed",
-                input_tokens=exc.input_tokens,
-                output_tokens=exc.output_tokens,
-                model=exc.model or "n/a",
-                latency_ms=int((time.monotonic() - start) * 1000),
-            )
-            raise
-        await self._log(
-            status="success",
-            error_code=None,
-            input_tokens=completion.input_tokens,
-            output_tokens=completion.output_tokens,
-            model=completion.model,
-            latency_ms=int((time.monotonic() - start) * 1000),
-        )
-        return completion
-
-    async def _log(
-        self,
-        *,
-        status: str,
-        error_code: str | None,
-        input_tokens: int | None,
-        output_tokens: int | None,
-        model: str,
-        latency_ms: int,
-    ) -> None:
-        try:
-            await self._ai_request_repo.create(
-                self._user_id,
-                operation="comparison",
-                provider=self.provider_name,
-                model=model,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                latency_ms=latency_ms,
-                status=status,
-                error_code=error_code,
-            )
-        except Exception:  # noqa: BLE001 — best-effort logging, mirrors R3/R5
-            logger.warning(
-                "comparison.ai_request_log_failed",
-                extra={"user_id": str(self._user_id), "operation": "comparison"},
-            )
 
 
 class _ObservedEmbeddingProvider(EmbeddingProvider):
@@ -340,8 +209,8 @@ class ComparisonProcessingService:
             user_id, comparison.document_b_id
         )
 
-        observed_llm = _ObservedLLMProvider(
-            self.llm_provider, self.ai_request_repo, user_id
+        observed_llm = ObservedLLMProvider(
+            self.llm_provider, self.ai_request_repo, user_id, operation="comparison"
         )
         observed_embeddings = _ObservedEmbeddingProvider(
             self.embedding_provider, self.ai_request_repo, user_id

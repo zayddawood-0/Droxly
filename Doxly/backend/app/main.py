@@ -13,6 +13,7 @@ from app.api.v1.routers import (
     documents,
     extractions,
     local_storage,
+    summaries,
     users,
 )
 from app.core.config import settings
@@ -29,6 +30,8 @@ app.include_router(chat.router, prefix="/api/v1")
 app.include_router(extractions.router, prefix="/api/v1")
 app.include_router(extractions.document_extractions_router, prefix="/api/v1")
 app.include_router(comparisons.router, prefix="/api/v1")
+app.include_router(summaries.router, prefix="/api/v1")
+app.include_router(summaries.document_summaries_router, prefix="/api/v1")
 
 if settings.storage_provider == "local":
     # tasks/remediation-plan.md R2 — dev/test-only stand-in for the real
