@@ -205,6 +205,71 @@ async def test_terminal_structural_failure_persists_failed_status_and_logs_error
     assert row.model == "n/a"
 
 
+async def test_terminal_failure_with_provider_usage_logs_real_tokens_not_none(
+    db_session,
+):
+    """
+    R5 audit finding #1 — when the provider's HTTP call succeeded and
+    reported real usage, but the structured-output *gate* itself failed
+    (AnthropicLLMProvider.generate_structured now attaches that usage to
+    the raised StructuredOutputError — see test_llm_provider.py), the
+    resulting ai_requests row must carry the REAL tokens, not None/"n/a" —
+    distinct from the sibling test above, which covers the case where the
+    exception genuinely has no usage to report.
+    """
+    user = await make_user(db_session)
+    document = await _make_ready_document_with_chunk(
+        db_session, user.id, content=INVOICE_TEXT
+    )
+    extraction = await ExtractionRepository(db_session).create(
+        user.id,
+        document_id=document.id,
+        template_key="invoice",
+        schema_json=PRESET_TEMPLATES["invoice"]["fields"],
+        result_json=[],
+        status="processing",
+    )
+    llm = FakeLLMProvider(
+        responses=["invoice"],
+        structured_responses=[
+            StructuredOutputError(
+                "malformed", input_tokens=123, output_tokens=45, model="claude-sonnet-5"
+            ),
+            StructuredOutputError(
+                "still malformed",
+                input_tokens=123,
+                output_tokens=45,
+                model="claude-sonnet-5",
+            ),
+        ],
+    )
+    service = _build_service(db_session, llm)
+
+    await service.run_extraction(user.id, extraction.id)
+
+    updated = await ExtractionRepository(db_session).get(user.id, extraction.id)
+    assert updated.status == "failed"
+
+    rows = (
+        (
+            await db_session.execute(
+                select(AiRequest).where(
+                    AiRequest.user_id == user.id, AiRequest.operation == "extraction"
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.status == "error"
+    assert row.error_code == "extraction_failed"
+    assert row.input_tokens == 123
+    assert row.output_tokens == 45
+    assert row.model == "claude-sonnet-5"
+
+
 async def test_missing_extraction_is_silently_skipped(db_session):
     user = await make_user(db_session)
     llm = FakeLLMProvider()

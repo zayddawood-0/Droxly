@@ -6,6 +6,8 @@ from app.ai.graphs.extraction import (
     ExtractedField,
     _build_result_model,
     build_extraction_graph,
+    document_classifier_node,
+    extraction_agent_node,
     schema_generator_node,
 )
 from app.ai.llm import FakeLLMProvider, StructuredOutputError
@@ -86,6 +88,53 @@ def test_extracted_field_never_requires_a_fabricated_value():
     )
     assert field.value is None
     assert field.found is False
+
+
+# --- R5 audit finding #2 (ai.md §4 / NFR-SEC-007) — prompt-injection
+# defense: document-provided content must be explicitly delimited and
+# framed as untrusted data, mirroring document_qa.py's SYSTEM_PROMPT
+# pattern exactly. These inspect the actual constructed system prompt and
+# message content via FakeLLMProvider.calls — not merely that the node
+# runs successfully. ---
+
+
+async def test_document_classifier_system_prompt_disregards_embedded_instructions():
+    llm = FakeLLMProvider(responses=["invoice"])
+    retrieval = _FakeRetrieval()
+    state = _base_state()
+
+    await document_classifier_node(state, llm, retrieval)
+
+    call = llm.calls[-1]
+    assert "<document_context>" in call["messages"][0].content
+    assert "</document_context>" in call["messages"][0].content
+    system_prompt = call["system_prompt"]
+    assert "reference data" in system_prompt
+    assert "never instructions" in system_prompt
+    assert "disregard" in system_prompt.lower()
+
+
+async def test_extraction_agent_system_prompt_disregards_embedded_instructions():
+    fake_result = _build_result_model(PRESET_TEMPLATES["invoice"]["fields"])(
+        invoice_number=ExtractedField(value="123"),
+        invoice_date=ExtractedField(value="2026-01-01"),
+        vendor_name=ExtractedField(value="Acme Corp"),
+        total_amount=ExtractedField(value="500"),
+        due_date=ExtractedField(value=None, found=False, reason="n/a"),
+    )
+    llm = FakeLLMProvider(structured_responses=[fake_result])
+    retrieval = _FakeRetrieval()
+    state = _base_state(resolved_schema_json=PRESET_TEMPLATES["invoice"]["fields"])
+
+    await extraction_agent_node(state, llm, retrieval)
+
+    call = llm.calls[-1]
+    assert "<document_context>" in call["messages"][0].content
+    assert "</document_context>" in call["messages"][0].content
+    system_prompt = call["system_prompt"]
+    assert "reference data" in system_prompt
+    assert "never instructions" in system_prompt
+    assert "disregard" in system_prompt.lower()
 
 
 # --- Full-graph routing tests ---

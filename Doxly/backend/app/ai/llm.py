@@ -61,7 +61,32 @@ class StructuredOutputError(Exception):
     (ai.md §5's "two gates, not one"). A graph's Validation node catches
     this to decide bounded retry vs. terminal failure (langgraph.md §1.5) —
     this is not itself a retry decision.
+
+    R5 audit finding #1 (`NFR-OBS-001`): a provider HTTP call can succeed
+    (and report real `input_tokens`/`output_tokens`) even when the
+    *structured-output* gate fails afterward (no `tool_use` block, or one
+    that fails Pydantic validation) — that usage was already real and
+    metered, and must not be discarded just because this exception is
+    raised instead of a `StructuredCompletion`. `input_tokens`/
+    `output_tokens`/`model` default to `None` (never fabricated) for the
+    genuine case where no HTTP response was ever received at all (a
+    network-level failure propagates as a different exception entirely,
+    never reaches here) or for a caller-constructed instance (e.g.
+    `FakeLLMProvider`'s test double) that has no usage to report.
     """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        model: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.model = model
 
 
 class LLMProvider(ABC):
@@ -142,7 +167,13 @@ class FakeLLMProvider(LLMProvider):
         max_tokens: int = 1024,
         temperature: float = 0.0,
     ) -> Completion:
-        self.calls.append({"messages": messages, "model_tier": model_tier})
+        self.calls.append(
+            {
+                "messages": messages,
+                "model_tier": model_tier,
+                "system_prompt": system_prompt,
+            }
+        )
         text = self._responses.pop(0) if self._responses else self._default_response
         return Completion(
             text=text,
@@ -177,7 +208,12 @@ class FakeLLMProvider(LLMProvider):
         model_tier: ModelTier,
     ) -> StructuredCompletion[T]:
         self.calls.append(
-            {"messages": messages, "model_tier": model_tier, "structured": True}
+            {
+                "messages": messages,
+                "model_tier": model_tier,
+                "system_prompt": system_prompt,
+                "structured": True,
+            }
         )
         if self._structured_responses:
             next_response = self._structured_responses.pop(0)
@@ -280,20 +316,41 @@ class AnthropicLLMProvider(LLMProvider):
             tools=[tool],
             tool_choice={"type": "tool", "name": "emit_result"},
         )
+        # R5 audit finding #1 — a successful HTTP response already carries
+        # real, metered usage regardless of whether the structured-output
+        # gate below succeeds; both failure branches attach it to the
+        # raised StructuredOutputError so a caller (e.g. the Extraction
+        # Agent node) can still log real ai_requests token counts on a
+        # structural failure, instead of losing already-known data.
+        usage = payload["usage"]
+        input_tokens = usage["input_tokens"]
+        output_tokens = usage["output_tokens"]
+        model = payload["model"]
+
         tool_use = next(
             (block for block in payload["content"] if block["type"] == "tool_use"), None
         )
         if tool_use is None:
-            raise StructuredOutputError("Provider did not return a tool_use block.")
+            raise StructuredOutputError(
+                "Provider did not return a tool_use block.",
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                model=model,
+            )
         try:
             result = output_schema.model_validate(tool_use["input"])
         except ValidationError as error:
-            raise StructuredOutputError(str(error)) from error
+            raise StructuredOutputError(
+                str(error),
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                model=model,
+            ) from error
         return StructuredCompletion(
             result=result,
-            input_tokens=payload["usage"]["input_tokens"],
-            output_tokens=payload["usage"]["output_tokens"],
-            model=payload["model"],
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            model=model,
         )
 
     def _headers(self) -> dict[str, str]:
