@@ -27,8 +27,13 @@ class Extraction(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         nullable=False,
     )
     template_key: Mapped[str | None] = mapped_column(Text, nullable=True)
-    schema_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    result_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    # R5: both columns actually hold a JSON *array* of per-field dicts
+    # (api.md §6: `schema?: [{...}]`, `result: [{...}]`) — `list[dict]`,
+    # not a single JSON object, corrected from the original scaffold's
+    # `Mapped[dict]` (JSONB itself is shape-agnostic; only the Python-side
+    # type hint was wrong).
+    schema_json: Mapped[list[dict]] = mapped_column(JSONB, nullable=False)
+    result_json: Mapped[list[dict]] = mapped_column(JSONB, nullable=False)
     status: Mapped[str] = mapped_column(
         Text, nullable=False, server_default="completed"
     )

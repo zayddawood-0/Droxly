@@ -188,7 +188,7 @@ async def change_classification_node(state: ComparisonState, llm: LLMProvider) -
 
     numbered = "\n".join(f"{i}. {d.description}" for i, d in enumerate(differences))
     try:
-        result = await llm.generate_structured(
+        completion = await llm.generate_structured(
             [Message("user", numbered)],
             system_prompt=(
                 "Classify each numbered change as exactly one of: factual, numeric, "
@@ -197,7 +197,7 @@ async def change_classification_node(state: ComparisonState, llm: LLMProvider) -
             output_schema=ClassifiedDifferences,
             model_tier="standard",
         )
-        categories = result.categories
+        categories = completion.result.categories
     except StructuredOutputError:
         categories = []
 

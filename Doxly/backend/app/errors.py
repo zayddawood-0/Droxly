@@ -276,3 +276,22 @@ class MessageNotInProgressError(DoxlyError):
     status_code = 409
     error_code = "not_in_progress"
     default_message = "This message isn't currently generating."
+
+
+# --- R5 (tasks/remediation-plan.md) — extraction ---
+
+
+class UnknownExtractionFieldError(DoxlyError):
+    """
+    422 — api.md's PATCH /extractions/{id}: a correction's `field` name
+    isn't present in the extraction's own `schema` (data-dependent — the
+    schema lives on the specific extraction row, not the request body's own
+    shape, so per skills/backend.md §9 this is a service-layer check, not a
+    Pydantic one).
+    """
+
+    status_code = 422
+    error_code = "unknown_field"
+    default_message = (
+        "One or more corrected fields aren't part of this extraction's schema."
+    )

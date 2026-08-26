@@ -107,7 +107,7 @@ async def summary_generator_node(state: SummarizationState, llm: LLMProvider) ->
 async def quality_checker_node(state: SummarizationState, llm: LLMProvider) -> dict:
     """langgraph.md §3 node 3 — FAST tier gate: coverage + coherence."""
     try:
-        result = await llm.generate_structured(
+        completion = await llm.generate_structured(
             [
                 Message(
                     "user",
@@ -123,6 +123,7 @@ async def quality_checker_node(state: SummarizationState, llm: LLMProvider) -> d
             output_schema=QualityCheckResult,
             model_tier="fast",
         )
+        result = completion.result
     except StructuredOutputError:
         result = QualityCheckResult(
             passed=False,

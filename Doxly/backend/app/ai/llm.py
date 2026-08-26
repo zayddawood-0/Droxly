@@ -36,6 +36,24 @@ class Completion:
     model: str
 
 
+@dataclass(frozen=True)
+class StructuredCompletion[T: BaseModel]:
+    """
+    R5 remediation (`NFR-OBS-001`) — `generate_structured`'s original return
+    shape was the bare validated `T`, with no usage data at all, unlike
+    `generate()`'s `Completion`. That made it impossible for any caller
+    (the Extraction Agent node being the first real one) to log real
+    input/output token counts for a structured-output call. Mirrors
+    `Completion` exactly, wrapping the validated result alongside real
+    provider-reported usage so callers get both without a second call.
+    """
+
+    result: T
+    input_tokens: int
+    output_tokens: int
+    model: str
+
+
 class StructuredOutputError(Exception):
     """
     Raised by `generate_structured` when the provider's constrained output
@@ -82,7 +100,7 @@ class LLMProvider(ABC):
         system_prompt: str,
         output_schema: type[T],
         model_tier: ModelTier,
-    ) -> T:
+    ) -> StructuredCompletion[T]:
         """
         ai.md §5: provider-constrained output, then validated against
         `output_schema` with Pydantic before the caller ever sees it.
@@ -157,7 +175,7 @@ class FakeLLMProvider(LLMProvider):
         system_prompt: str,
         output_schema: type[T],
         model_tier: ModelTier,
-    ) -> T:
+    ) -> StructuredCompletion[T]:
         self.calls.append(
             {"messages": messages, "model_tier": model_tier, "structured": True}
         )
@@ -168,7 +186,13 @@ class FakeLLMProvider(LLMProvider):
             # Test double: the caller queues responses matching the schema it
             # requests, but that contract isn't expressible in the queue's
             # own (necessarily erased) storage type.
-            return cast(T, next_response)
+            result = cast(T, next_response)
+            return StructuredCompletion(
+                result=result,
+                input_tokens=sum(len(m.content.split()) for m in messages),
+                output_tokens=len(str(result.model_dump()).split()),
+                model=f"fake-{model_tier}",
+            )
         raise StructuredOutputError(
             "FakeLLMProvider has no queued structured_responses for this call."
         )
@@ -238,7 +262,7 @@ class AnthropicLLMProvider(LLMProvider):
         system_prompt: str,
         output_schema: type[T],
         model_tier: ModelTier,
-    ) -> T:
+    ) -> StructuredCompletion[T]:
         # Forced tool-choice is Anthropic's native structured-output
         # mechanism (ai.md §5 step 2) — the schema becomes a single tool
         # the model is required to call.
@@ -262,9 +286,15 @@ class AnthropicLLMProvider(LLMProvider):
         if tool_use is None:
             raise StructuredOutputError("Provider did not return a tool_use block.")
         try:
-            return output_schema.model_validate(tool_use["input"])
+            result = output_schema.model_validate(tool_use["input"])
         except ValidationError as error:
             raise StructuredOutputError(str(error)) from error
+        return StructuredCompletion(
+            result=result,
+            input_tokens=payload["usage"]["input_tokens"],
+            output_tokens=payload["usage"]["output_tokens"],
+            model=payload["model"],
+        )
 
     def _headers(self) -> dict[str, str]:
         return {

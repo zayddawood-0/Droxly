@@ -69,3 +69,41 @@ def enqueue_document_processing(user_id: uuid.UUID, document_id: uuid.UUID) -> N
             "document_processing.enqueue_failed",
             extra={"user_id": str(user_id), "document_id": str(document_id)},
         )
+
+
+# --- R5 (tasks/remediation-plan.md) — extraction ---
+
+EXTRACTION_QUEUE_NAME = "extraction"
+
+
+def get_extraction_queue() -> Queue:
+    return Queue(EXTRACTION_QUEUE_NAME, connection=redis_connection)
+
+
+def enqueue_extraction(user_id: uuid.UUID, extraction_id: uuid.UUID) -> None:
+    """
+    FR-EXT-001's trigger — called once `ExtractionService.create_extraction`
+    has persisted the initial `extractions` row (`status='processing'`),
+    mirroring `enqueue_document_processing`'s exact shape: plain str-ified
+    UUID args, the same job-level `Retry`/`on_failure` resilience pattern
+    (a worker crash mid-job is the same operational reality here as it is
+    for document processing), and the same ADR-023 fail-open behavior on a
+    Redis outage (a document is left `queued`/an extraction is left
+    `processing` with no job enqueued, rather than the request itself
+    failing with a 500 — operationally visible via the warning below, not
+    a silent gap).
+    """
+    try:
+        queue = get_extraction_queue()
+        queue.enqueue(
+            "app.workers.extraction_worker.run_extraction_job",
+            str(user_id),
+            str(extraction_id),
+            retry=Retry(max=_MAX_RETRIES, interval=_RETRY_INTERVALS_SECONDS),
+            on_failure=Callback("app.workers.extraction_worker.on_extraction_failure"),
+        )
+    except redis.RedisError:
+        logger.warning(
+            "extraction.enqueue_failed",
+            extra={"user_id": str(user_id), "extraction_id": str(extraction_id)},
+        )

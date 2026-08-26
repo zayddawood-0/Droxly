@@ -1,6 +1,7 @@
 import uuid
 
 from app.ai.graphs.extraction import (
+    GENERIC_TEMPLATE_FIELDS,
     PRESET_TEMPLATES,
     ExtractedField,
     _build_result_model,
@@ -9,6 +10,10 @@ from app.ai.graphs.extraction import (
 )
 from app.ai.llm import FakeLLMProvider, StructuredOutputError
 from app.services.retrieval_service import AssembledContext, ContextItem
+
+
+def _field_names(fields: list[dict]) -> set[str]:
+    return {field["name"] for field in fields}
 
 
 class _FakeRetrieval:
@@ -50,7 +55,7 @@ def _base_state(**overrides):
 
 
 def test_schema_generator_prefers_requested_schema():
-    custom = {"custom_field": "string"}
+    custom = [{"name": "custom_field", "type": "string", "required": False}]
     result = schema_generator_node(
         {"requested_schema": custom, "document_type": "invoice"}
     )
@@ -61,17 +66,17 @@ def test_schema_generator_falls_back_to_template_key():
     result = schema_generator_node(
         {"template_key": "resume", "document_type": "invoice"}
     )
-    assert result["resolved_schema_json"] == PRESET_TEMPLATES["resume"]
+    assert result["resolved_schema_json"] == PRESET_TEMPLATES["resume"]["fields"]
 
 
 def test_schema_generator_falls_back_to_classified_document_type():
     result = schema_generator_node({"document_type": "contract"})
-    assert result["resolved_schema_json"] == PRESET_TEMPLATES["contract"]
+    assert result["resolved_schema_json"] == PRESET_TEMPLATES["contract"]["fields"]
 
 
 def test_schema_generator_falls_back_to_generic_when_nothing_matches():
     result = schema_generator_node({"document_type": "other"})
-    assert result["resolved_schema_json"] == PRESET_TEMPLATES["generic"]
+    assert result["resolved_schema_json"] == GENERIC_TEMPLATE_FIELDS
 
 
 def test_extracted_field_never_requires_a_fabricated_value():
@@ -87,7 +92,7 @@ def test_extracted_field_never_requires_a_fabricated_value():
 
 
 async def test_graph_classifies_resolves_schema_and_extracts():
-    result_model = _build_result_model(PRESET_TEMPLATES["invoice"])
+    result_model = _build_result_model(PRESET_TEMPLATES["invoice"]["fields"])
     fake_result = result_model(
         invoice_number=ExtractedField(value="123", confidence=0.9, source_page=1),
         invoice_date=ExtractedField(value="2026-01-01", confidence=0.9, source_page=1),
@@ -104,16 +109,19 @@ async def test_graph_classifies_resolves_schema_and_extracts():
 
     assert result["status"] == "success"
     assert result["document_type"] == "invoice"
-    assert set(result["resolved_schema_json"].keys()) == set(
-        PRESET_TEMPLATES["invoice"].keys()
+    assert _field_names(result["resolved_schema_json"]) == _field_names(
+        PRESET_TEMPLATES["invoice"]["fields"]
     )
     assert result["validated_result"]["due_date"]["found"] is False
     assert result["validated_result"]["due_date"]["value"] is None
     assert result["validated_result"]["vendor_name"]["value"] == "Acme Corp"
+    assert result["extraction_input_tokens"] > 0
+    assert result["extraction_output_tokens"] > 0
+    assert result["extraction_model"] == "fake-standard"
 
 
 async def test_graph_falls_through_to_generic_schema_on_unclassifiable_document():
-    result_model = _build_result_model(PRESET_TEMPLATES["generic"])
+    result_model = _build_result_model(GENERIC_TEMPLATE_FIELDS)
     fake_result = result_model(
         summary=ExtractedField(value="A short document.", confidence=0.5),
         key_facts=ExtractedField(
@@ -127,13 +135,13 @@ async def test_graph_falls_through_to_generic_schema_on_unclassifiable_document(
 
     assert result["status"] == "success"
     assert result["document_type"] == "other"
-    assert set(result["resolved_schema_json"].keys()) == set(
-        PRESET_TEMPLATES["generic"].keys()
+    assert _field_names(result["resolved_schema_json"]) == _field_names(
+        GENERIC_TEMPLATE_FIELDS
     )
 
 
 async def test_graph_retries_once_on_structural_failure_then_succeeds():
-    result_model = _build_result_model(PRESET_TEMPLATES["generic"])
+    result_model = _build_result_model(GENERIC_TEMPLATE_FIELDS)
     fake_result = result_model(
         summary=ExtractedField(value="Recovered on retry."),
         key_facts=ExtractedField(value=None, found=False, reason="n/a"),

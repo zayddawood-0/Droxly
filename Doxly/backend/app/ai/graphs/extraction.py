@@ -11,40 +11,186 @@ from app.services.retrieval_service import RetrievalService
 
 DocumentType = Literal["invoice", "contract", "resume", "research_paper", "other"]
 
-# FR-EXT-002's Template Gallery — preset field schemas per document type; a
-# generic key-fact schema is the last-resort default so extraction always
-# has something to do (langgraph.md §4 node 2).
-PRESET_TEMPLATES: dict[str, dict[str, str]] = {
+# FR-EXT-002's Template Gallery — the single source of truth for every
+# preset's field schema, reused by both `GET /extractions/templates`
+# (api.md §6, needs the full name/description/required metadata) and this
+# graph's own Schema Generator node (needs only name/type per field to
+# build the dynamic result model) — one registry, not two independently
+# maintained field lists that could silently drift from each other.
+# Each field is a plain dict (not a dataclass) because this is exactly the
+# shape a user-supplied custom `schema` arrives in from the API request
+# (api.md: `schema?: [{ name, type, description?, required }]`) and the
+# shape persisted verbatim into `extractions.schema_json` (database.md
+# §3.11) — one shape end-to-end, no adapter needed between "preset" and
+# "custom" schemas once resolved.
+PRESET_TEMPLATES: dict[str, dict] = {
     "invoice": {
-        "invoice_number": "string",
-        "invoice_date": "string",
-        "vendor_name": "string",
-        "total_amount": "string",
-        "due_date": "string",
+        "name": "Invoice",
+        "description": "Standard invoice fields: number, dates, vendor, and amount.",
+        "fields": [
+            {
+                "name": "invoice_number",
+                "type": "string",
+                "description": "The invoice's own identifying number.",
+                "required": True,
+            },
+            {
+                "name": "invoice_date",
+                "type": "string",
+                "description": "The date the invoice was issued.",
+                "required": True,
+            },
+            {
+                "name": "vendor_name",
+                "type": "string",
+                "description": "The vendor/seller's name.",
+                "required": True,
+            },
+            {
+                "name": "total_amount",
+                "type": "string",
+                "description": "The total amount due.",
+                "required": True,
+            },
+            {
+                "name": "due_date",
+                "type": "string",
+                "description": "The payment due date.",
+                "required": False,
+            },
+        ],
     },
     "contract": {
-        "parties": "string",
-        "effective_date": "string",
-        "term_length": "string",
-        "governing_law": "string",
-        "termination_clause": "string",
+        "name": "Contract",
+        "description": "Key contractual terms: parties, dates, governing law, and termination.",
+        "fields": [
+            {
+                "name": "parties",
+                "type": "string",
+                "description": "The contracting parties.",
+                "required": True,
+            },
+            {
+                "name": "effective_date",
+                "type": "string",
+                "description": "The date the contract takes effect.",
+                "required": True,
+            },
+            {
+                "name": "term_length",
+                "type": "string",
+                "description": "The duration of the contract.",
+                "required": False,
+            },
+            {
+                "name": "governing_law",
+                "type": "string",
+                "description": "The jurisdiction whose law governs the contract.",
+                "required": False,
+            },
+            {
+                "name": "termination_clause",
+                "type": "string",
+                "description": "The conditions under which the contract may be terminated.",
+                "required": False,
+            },
+        ],
     },
     "resume": {
-        "candidate_name": "string",
-        "email": "string",
-        "years_experience": "string",
-        "most_recent_title": "string",
-        "education": "string",
+        "name": "Resume",
+        "description": "Candidate identity, experience, and education.",
+        "fields": [
+            {
+                "name": "candidate_name",
+                "type": "string",
+                "description": "The candidate's full name.",
+                "required": True,
+            },
+            {
+                "name": "email",
+                "type": "string",
+                "description": "The candidate's contact email.",
+                "required": False,
+            },
+            {
+                "name": "years_experience",
+                "type": "string",
+                "description": "Total years of professional experience.",
+                "required": False,
+            },
+            {
+                "name": "most_recent_title",
+                "type": "string",
+                "description": "The candidate's most recent job title.",
+                "required": False,
+            },
+            {
+                "name": "education",
+                "type": "string",
+                "description": "The candidate's education history.",
+                "required": False,
+            },
+        ],
     },
     "research_paper": {
-        "title": "string",
-        "authors": "string",
-        "abstract": "string",
-        "publication_year": "string",
-        "key_findings": "string",
+        "name": "Research Paper",
+        "description": "Title, authorship, and key findings of an academic paper.",
+        "fields": [
+            {
+                "name": "title",
+                "type": "string",
+                "description": "The paper's title.",
+                "required": True,
+            },
+            {
+                "name": "authors",
+                "type": "string",
+                "description": "The paper's authors.",
+                "required": True,
+            },
+            {
+                "name": "abstract",
+                "type": "string",
+                "description": "The paper's abstract.",
+                "required": False,
+            },
+            {
+                "name": "publication_year",
+                "type": "string",
+                "description": "The year the paper was published.",
+                "required": False,
+            },
+            {
+                "name": "key_findings",
+                "type": "string",
+                "description": "The paper's key findings.",
+                "required": False,
+            },
+        ],
     },
-    "generic": {"summary": "string", "key_facts": "string"},
 }
+
+# langgraph.md §4 node 2 — "a generic key-fact schema is the last-resort
+# default so extraction never has nothing to do." Deliberately NOT part of
+# `PRESET_TEMPLATES`: it is never a valid `template_key` a user can request
+# (api.md's create-extraction 422 validates `template_key` against the
+# *named* presets only) and is never listed by `GET /extractions/templates`
+# — it exists solely as the Schema Generator's own internal fallback for an
+# unclassifiable ("other") document.
+GENERIC_TEMPLATE_FIELDS: list[dict] = [
+    {
+        "name": "summary",
+        "type": "string",
+        "description": "A short summary of the document.",
+        "required": True,
+    },
+    {
+        "name": "key_facts",
+        "type": "string",
+        "description": "Key facts extracted from the document.",
+        "required": False,
+    },
+]
 
 # langgraph.md §4 — "one retry of Extraction Agent... a second structural
 # failure routes to terminal failure."
@@ -72,14 +218,22 @@ class ExtractionState(TypedDict, total=False):
     user_id: uuid.UUID
     document_id: uuid.UUID
     template_key: str | None
-    requested_schema: dict[str, str] | None
+    requested_schema: list[dict] | None
     document_type: DocumentType
-    resolved_schema_json: dict[str, str]
+    resolved_schema_json: list[dict]
     raw_extraction: BaseModel | None
     validated_result: dict | None
     retry_count: int
     status: Literal["success", "failed"]
     error: str | None
+    # R5 (NFR-OBS-001) — real usage from the Extraction Agent's structured
+    # call (the classifier's own FAST-tier `generate()` call already
+    # returns a `Completion`; these three mirror it for the STANDARD-tier
+    # call, which is what ExtractionService logs as the run's `ai_requests`
+    # row, per this same run being one observability unit like chat's turn).
+    extraction_input_tokens: int | None
+    extraction_output_tokens: int | None
+    extraction_model: str | None
 
 
 async def document_classifier_node(
@@ -119,13 +273,14 @@ def schema_generator_node(state: ExtractionState) -> dict:
     """
     if state.get("requested_schema"):
         return {"resolved_schema_json": state["requested_schema"]}
-    key = state.get("template_key") or state.get("document_type") or "other"
-    schema = PRESET_TEMPLATES.get(key, PRESET_TEMPLATES["generic"])
-    return {"resolved_schema_json": schema}
+    key = state.get("template_key") or state.get("document_type")
+    template = PRESET_TEMPLATES.get(key) if key else None
+    fields = template["fields"] if template else GENERIC_TEMPLATE_FIELDS
+    return {"resolved_schema_json": fields}
 
 
-def _build_result_model(schema: dict[str, str]) -> type[BaseModel]:
-    fields = {name: (ExtractedField, ...) for name in schema}
+def _build_result_model(schema: list[dict]) -> type[BaseModel]:
+    fields = {field["name"]: (ExtractedField, ...) for field in schema}
     return create_model("ExtractionResult", **fields)  # type: ignore[call-overload]
 
 
@@ -141,19 +296,21 @@ async def extraction_agent_node(
     schema = state["resolved_schema_json"]
     context = await retrieval.retrieve(
         state["user_id"],
-        "Key facts: " + ", ".join(schema.keys()),
+        "Key facts: " + ", ".join(field["name"] for field in schema),
         document_id=state["document_id"],
     )
     context_block = "\n\n".join(
         f"[page {item.page_number}] {item.content}" for item in context.items
     )
     field_descriptions = "\n".join(
-        f"- {name} ({type_})" for name, type_ in schema.items()
+        f"- {field['name']} ({field['type']}){' [required]' if field.get('required') else ''}"
+        f"{': ' + field['description'] if field.get('description') else ''}"
+        for field in schema
     )
     result_model = _build_result_model(schema)
 
     try:
-        result = await llm.generate_structured(
+        completion = await llm.generate_structured(
             [
                 Message(
                     "user",
@@ -170,8 +327,11 @@ async def extraction_agent_node(
             model_tier="standard",
         )
         return {
-            "raw_extraction": result,
-            "validated_result": result.model_dump(),
+            "raw_extraction": completion.result,
+            "validated_result": completion.result.model_dump(),
+            "extraction_input_tokens": completion.input_tokens,
+            "extraction_output_tokens": completion.output_tokens,
+            "extraction_model": completion.model,
             "error": None,
         }
     except StructuredOutputError as exc:

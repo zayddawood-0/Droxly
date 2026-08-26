@@ -48,13 +48,16 @@ async def test_stream_yields_the_generated_text_word_by_word():
 
 async def test_generate_structured_returns_the_queued_pydantic_object():
     provider = FakeLLMProvider(structured_responses=[_Foo(x=42)])
-    result = await provider.generate_structured(
+    completion = await provider.generate_structured(
         [Message("user", "hi")],
         system_prompt="sys",
         output_schema=_Foo,
         model_tier="standard",
     )
-    assert result.x == 42
+    assert completion.result.x == 42
+    assert completion.input_tokens > 0
+    assert completion.output_tokens > 0
+    assert completion.model == "fake-standard"
 
 
 async def test_generate_structured_can_be_scripted_to_raise():
