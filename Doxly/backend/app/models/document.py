@@ -4,13 +4,14 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     CheckConstraint,
+    Computed,
     ForeignKey,
     Index,
     Integer,
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import TSVECTOR, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -63,6 +64,21 @@ class Document(
     extracted_text_available: Mapped[bool] = mapped_column(
         nullable=False, server_default="false"
     )
+    # R8 (tasks/remediation-plan.md, rag.md §12 Hybrid Search) — generated,
+    # DB-maintained tsvector over file_name for filename matches. Strips
+    # non-alphanumeric characters to spaces first — Postgres's default
+    # parser otherwise classifies "invoice-march.pdf" as one undecomposed
+    # "file" token, so a search for "invoice" would never match it (see the
+    # migration's own note). GIN index hand-authored in the migration
+    # (skills/database.md §4), mirroring the HNSW-index precedent below:
+    # mapped here for ORM-level awareness only, never written to directly.
+    search_vector: Mapped[str | None] = mapped_column(
+        TSVECTOR,
+        Computed(
+            "to_tsvector('english', regexp_replace(file_name, '[^a-zA-Z0-9]+', ' ', 'g'))",
+            persisted=True,
+        ),
+    )
 
 
 class DocumentChunk(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -100,6 +116,12 @@ class DocumentChunk(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     embedding_model: Mapped[str] = mapped_column(
         Text, nullable=False, server_default="text-embedding-3-small"
+    )
+    # R8 — generated tsvector over content, for chunk-level full-text
+    # matches (rag.md §12). Same ORM-awareness-only convention as
+    # `embedding`'s HNSW index note above.
+    search_vector: Mapped[str | None] = mapped_column(
+        TSVECTOR, Computed("to_tsvector('english', content)", persisted=True)
     )
 
 

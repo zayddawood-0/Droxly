@@ -93,10 +93,11 @@ erDiagram
 | status | TEXT | NOT NULL DEFAULT 'queued', CHECK IN ('queued','extracting','chunking','embedding','ready','failed') |
 | processing_error | TEXT | NULL (sanitized, user-safe message only) |
 | extracted_text_available | BOOLEAN | NOT NULL DEFAULT false |
+| search_vector | TSVECTOR | `GENERATED ALWAYS AS (to_tsvector('english', file_name)) STORED` — filename matches for Global Search (`FR-SEARCH-*`, `rag.md` §Hybrid Search) |
 | created_at / updated_at | TIMESTAMPTZ | |
 | deleted_at | TIMESTAMPTZ | NULL |
 
-**Indexes:** `(user_id, deleted_at)`, `(user_id, status)`, `(user_id, created_at DESC)` for list/sort.
+**Indexes:** `(user_id, deleted_at)`, `(user_id, status)`, `(user_id, created_at DESC)` for list/sort; GIN index on `search_vector` (`ix_documents_search_vector`).
 **Constraints:** `size_bytes` application-checked against plan-tier limit before insert (not a DB constraint, since limits vary by plan — see `decisions.md` OQ-06/07).
 
 ### 3.4 `document_chunks`
@@ -116,12 +117,14 @@ erDiagram
 | token_count | INTEGER | NOT NULL |
 | embedding | VECTOR(1536) | NULL until embedded (see `rag.md` for dimension rationale) |
 | embedding_model | TEXT | NOT NULL DEFAULT 'text-embedding-3-small' |
+| search_vector | TSVECTOR | `GENERATED ALWAYS AS (to_tsvector('english', content)) STORED` — chunk-level full-text matches for Global Search (`FR-SEARCH-*`, `rag.md` §Hybrid Search) |
 | created_at | TIMESTAMPTZ | |
 
 **Indexes:**
 - `UNIQUE (document_id, chunk_index)`
 - `(user_id)` — leading column so tenant-filtered vector search doesn't require a join for the common case.
 - Vector index: `CREATE INDEX ON document_chunks USING hnsw (embedding vector_cosine_ops)` (HNSW chosen over IVFFlat for better recall without a separate training/list-count tuning step at our expected scale — see `performance.md`).
+- GIN index on `search_vector` (`ix_document_chunks_search_vector`), named consistently with the HNSW vector index above (R8, `tasks/remediation-plan.md` §11.1).
 
 **Note on denormalized `user_id`:** stored redundantly (also derivable via `document_id → documents.user_id`) specifically so the pgvector similarity query can filter `WHERE user_id = :user_id` directly in the same index-friendly predicate without a join, which matters for `NFR-PERF-005`. Kept in sync via the same transaction that inserts the chunk; never updated independently.
 
