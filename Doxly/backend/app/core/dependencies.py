@@ -5,10 +5,12 @@ plan corrects Revision 1's omission of require_admin from this file).
 """
 
 from fastapi import Cookie, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
 from app.core.security import AccessTokenClaims, InvalidTokenError, decode_access_token
-from app.errors import ForbiddenError, UnauthorizedError
+from app.errors import AccountSuspendedError, ForbiddenError, UnauthorizedError
+from app.repositories.user_repository import UserRepository
 
 # Re-exported (not re-implemented) from core/database.py so every router/
 # service imports session provisioning from the same `app.core.dependencies`
@@ -49,6 +51,7 @@ def _decode_cookie(access_token: str | None) -> AccessTokenClaims | None:
 
 async def get_current_user(
     access_token: str | None = Cookie(default=None, alias=ACCESS_TOKEN_COOKIE_NAME),
+    db: AsyncSession = Depends(get_db_session),
 ) -> AccessTokenClaims:
     """
     skills/backend.md §8 — the only path by which a router learns who is
@@ -58,10 +61,29 @@ async def get_current_user(
     missing/expired/invalid token (api.md §0.4) — see
     get_current_user_optional below for the one case (pre-session rate
     limiting) that needs a non-raising variant.
+
+    R10 (tasks/remediation-plan.md, FR-ADMIN-003) — added a live
+    `users.status` check here, on every authenticated request, not just at
+    login/refresh (auth_service.py already checked it at both of those
+    points, mirrored here). Without this, `POST /admin/users/{id}/suspend`
+    could only ever block a *future* login/refresh — an already-issued,
+    still-unexpired access token (~15 min, decisions.md ADR-010) would keep
+    working right through it, silently under-implementing the requirement's
+    own explicit "immediately revoking all sessions" wording. The
+    trade-off (one extra indexed lookup per authenticated request,
+    app-wide) was confirmed deliberately rather than assumed — a fully
+    stateless-JWT alternative (a token denylist/version claim) was
+    available but not chosen, since it would have meant new stored state
+    for a mechanism the DB already models via `users.status`.
     """
     claims = _decode_cookie(access_token)
     if claims is None:
         raise UnauthorizedError()
+    user = await UserRepository(db).get_by_id(claims.user_id)
+    if user is None:
+        raise UnauthorizedError()
+    if user.status == "suspended":
+        raise AccountSuspendedError()
     return claims
 
 

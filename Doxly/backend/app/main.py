@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from app.api.v1.routers import (
+    admin,
     analytics,
     auth,
     chat,
@@ -36,6 +37,7 @@ app.include_router(summaries.router, prefix="/api/v1")
 app.include_router(summaries.document_summaries_router, prefix="/api/v1")
 app.include_router(search.router, prefix="/api/v1")
 app.include_router(analytics.router, prefix="/api/v1")
+app.include_router(admin.router, prefix="/api/v1")
 
 if settings.storage_provider == "local":
     # tasks/remediation-plan.md R2 — dev/test-only stand-in for the real

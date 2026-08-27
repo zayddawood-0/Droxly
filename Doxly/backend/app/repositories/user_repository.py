@@ -1,7 +1,8 @@
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import RefreshToken, User
@@ -56,6 +57,40 @@ class UserRepository:
             setattr(user, key, value)
         await self.session.flush()
         return user
+
+    async def list_paginated(
+        self,
+        *,
+        limit: int,
+        offset: int,
+        status: str | None = None,
+        plan: str | None = None,
+    ) -> tuple[Sequence[User], int]:
+        """
+        api.md §12 `GET /admin/users` (`FR-ADMIN-001`) — the one legitimate
+        place in the codebase a query over `users` is deliberately NOT
+        scoped to a single caller: `require_admin` (core/dependencies.py)
+        is the authorization boundary here, not a `user_id` filter. Every
+        route calling this goes through that dependency first
+        (security.md §3.1's role-check half of authorization) — this
+        method itself does not and must not re-check the caller's role.
+        """
+        filters = []
+        if status is not None:
+            filters.append(User.status == status)
+        if plan is not None:
+            filters.append(User.plan == plan)
+
+        stmt = select(User).where(*filters).order_by(User.created_at.desc())
+        count_stmt = select(func.count()).select_from(User).where(*filters)
+
+        items = (
+            (await self.session.execute(stmt.limit(limit).offset(offset)))
+            .scalars()
+            .all()
+        )
+        total = (await self.session.execute(count_stmt)).scalar_one()
+        return items, total
 
 
 class RefreshTokenRepository(TenantScopedRepository[RefreshToken]):

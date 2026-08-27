@@ -4,9 +4,7 @@ error envelope applies to Pydantic 422s globally, across more than one
 router, not just the one endpoint the original bug happened to be found on.
 """
 
-import uuid
-
-from tests.conftest import auth_cookie_headers
+from tests.conftest import auth_cookie_headers, make_user
 
 
 async def test_login_invalid_email_format_returns_envelope(client):
@@ -20,15 +18,16 @@ async def test_login_invalid_email_format_returns_envelope(client):
     assert "email" in error["fields"]
 
 
-async def test_users_me_patch_empty_display_name_returns_envelope(client):
+async def test_users_me_patch_empty_display_name_returns_envelope(client, db_session):
     """A second endpoint, a second router (users, not auth) — proves the
     handler is global (registered once in main.py), not copy-pasted per
-    router."""
-    user_id = uuid.uuid4()
+    router. R10: get_current_user now checks a live users.status, so this
+    needs a real user row, not a bare uuid4()."""
+    user = await make_user(db_session)
     response = await client.patch(
         "/api/v1/users/me",
         json={"display_name": ""},
-        headers=auth_cookie_headers(user_id),
+        headers=auth_cookie_headers(user.id),
     )
     assert response.status_code == 422
     error = response.json()["error"]

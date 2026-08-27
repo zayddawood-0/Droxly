@@ -315,3 +315,15 @@ class IdenticalDocumentsError(DoxlyError):
     status_code = 422
     error_code = "identical_documents"
     default_message = "The two documents to compare must be different."
+
+
+# --- R10 (tasks/remediation-plan.md) — admin ---
+
+
+class NotSuspendedError(DoxlyError):
+    """409 — api.md's POST /admin/users/{id}/unsuspend: the account isn't
+    currently suspended."""
+
+    status_code = 409
+    error_code = "not_suspended"
+    default_message = "This account is not currently suspended."
