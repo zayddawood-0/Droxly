@@ -3,7 +3,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import ColumnElement, delete, func, select
+from sqlalchemy import ColumnElement, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Document, DocumentChunk, DocumentTag, Tag
@@ -124,6 +124,50 @@ class DocumentRepository(TenantScopedRepository[Document]):
         await self.session.execute(delete(Document).where(Document.user_id == user_id))
         await self.session.flush()
         return storage_keys
+
+    async def confirm_if_unconfirmed(
+        self,
+        user_id: uuid.UUID,
+        document_id: uuid.UUID,
+        *,
+        checksum_sha256: str,
+        size_bytes: int,
+    ) -> Document | None:
+        """
+        Final-release-audit remediation (finding #1, self-disclosed in
+        tasks/R3-document-processing.md as owned by R2) — the atomic
+        compare-and-swap `confirm_upload` needs to be safe against a
+        genuinely concurrent duplicate request, not just a sequential
+        retry. `checksum_sha256=""` is the sentinel `presign_upload` sets
+        (never a real sha256 hex digest, which is always 64 hex chars),
+        so the WHERE clause below only ever matches a document that has
+        never been confirmed yet.
+
+        Postgres serializes two concurrent UPDATEs targeting the same row:
+        the second transaction blocks until the first commits, then
+        re-evaluates this WHERE clause against the now-already-confirmed
+        row and matches zero rows — no SELECT FOR UPDATE or explicit
+        locking needed, this is the standard atomic guarded-UPDATE
+        pattern. A `None` return means the document was already confirmed
+        (by an earlier call from this same client, or a concurrent one) —
+        the caller must treat that as a no-op, not an error, so a
+        double-click or client retry never double-counts
+        `storage_used_bytes` or double-enqueues processing.
+        """
+        result = await self.session.execute(
+            update(Document)
+            .where(
+                Document.id == document_id,
+                Document.user_id == user_id,
+                Document.deleted_at.is_(None),
+                Document.checksum_sha256 == "",
+            )
+            .values(checksum_sha256=checksum_sha256, size_bytes=size_bytes)
+            .returning(Document)
+        )
+        document = result.scalar_one_or_none()
+        await self.session.flush()
+        return document
 
     async def set_status(
         self,

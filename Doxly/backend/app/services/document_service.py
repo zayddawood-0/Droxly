@@ -118,9 +118,29 @@ class DocumentService:
     async def confirm_upload(
         self, user_id: uuid.UUID, document_id: uuid.UUID
     ) -> Document:
+        """
+        Idempotent (final-release-audit finding #1, self-disclosed in
+        tasks/R3-document-processing.md as owned by R2): a repeated
+        confirm of the same document — a client retry after a dropped
+        response, a double-click, or two genuinely concurrent requests —
+        must never increment `user.storage_used_bytes` or enqueue
+        processing more than once. `presign_upload` sets
+        `checksum_sha256=""` as the sentinel "not yet confirmed" value
+        (a real sha256 digest is always 64 hex chars, never empty); the
+        atomic `confirm_if_unconfirmed` UPDATE...WHERE below is what
+        actually guarantees this under real concurrency (see its own
+        docstring), not just this fast-path check.
+        """
         document = await self.document_repo.get(user_id, document_id)
         if document is None:
             raise NotFoundError()
+
+        if document.checksum_sha256:
+            # Fast path — this read already shows a confirmed document
+            # (the common case: a client retry arriving after the first
+            # confirm's response was lost, not a true race). No storage
+            # I/O, no usage change, no re-enqueue.
+            return document
 
         metadata = await self.storage_provider.get_object_metadata(document.storage_key)
         if metadata is None:
@@ -133,13 +153,29 @@ class DocumentService:
         checksum = await self._compute_checksum(document.storage_key)
         actual_size = metadata.size_bytes
 
-        document.checksum_sha256 = checksum
-        document.size_bytes = actual_size
-        await self.document_repo.session.flush()
-
         # security.md §5 — size is server-authoritative; the user's usage
         # counter is incremented from the VERIFIED size, not the declared
-        # one from presign.
+        # one from presign. The atomic guard below is the real safety net
+        # against a genuine concurrent duplicate that raced past the fast
+        # path above (both requests could have read checksum_sha256=""
+        # before either wrote): only the request whose UPDATE actually
+        # matches a row (`confirmed is not None`) is the one that gets to
+        # increment usage and enqueue processing.
+        confirmed = await self.document_repo.confirm_if_unconfirmed(
+            user_id,
+            document_id,
+            checksum_sha256=checksum,
+            size_bytes=actual_size,
+        )
+        if confirmed is None:
+            # Lost the race — a concurrent request already confirmed this
+            # document between our read above and this UPDATE. Return its
+            # current (already-confirmed) state; nothing left to do.
+            already_confirmed = await self.document_repo.get(user_id, document_id)
+            if already_confirmed is None:
+                raise NotFoundError()
+            return already_confirmed
+
         user = await self.user_repo.get_by_id(user_id)
         if user is not None:
             await self.user_repo.update(
@@ -150,8 +186,8 @@ class DocumentService:
         # exists; enqueue_document_processing fails open (decisions.md
         # ADR-023) rather than turning a transient Redis outage into a
         # failed upload confirmation.
-        enqueue_document_processing(user_id, document.id)
-        return document
+        enqueue_document_processing(user_id, confirmed.id)
+        return confirmed
 
     def _verify_upload_matches_declaration(
         self, document: Document, metadata: ObjectMetadata

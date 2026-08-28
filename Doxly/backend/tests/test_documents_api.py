@@ -176,6 +176,63 @@ async def test_confirm_increments_storage_used_bytes(client, db_session):
     assert refreshed.storage_used_bytes == len(PDF_BYTES)
 
 
+async def test_repeated_confirm_does_not_double_count_storage_usage(client, db_session):
+    """
+    Final-release-audit remediation (finding #1, self-disclosed in
+    tasks/R3-document-processing.md as owned by R2) -- a client retry
+    (dropped response, double-click) confirming the same document twice
+    must not double-increment storage_used_bytes. The genuinely-concurrent
+    case is covered separately in test_confirm_upload_concurrency.py,
+    which uses real independently-committing sessions; this test proves
+    the realistic *sequential* duplicate -- the far more common case in
+    practice -- at the HTTP layer.
+    """
+    from app.repositories.user_repository import UserRepository
+
+    user = await make_user(db_session)
+    document = await _upload_document(client, user.id)
+
+    second_confirm = await client.post(
+        f"/api/v1/documents/{document['id']}/confirm",
+        headers=auth_cookie_headers(user.id),
+    )
+    # Idempotent, not an error -- the same 202 shape a first-time confirm
+    # returns, per the smallest-safe-fix design (no new error code invented).
+    assert second_confirm.status_code == 202, second_confirm.text
+
+    refreshed = await UserRepository(db_session).get_by_id(user.id)
+    assert refreshed.storage_used_bytes == len(PDF_BYTES)
+
+    detail = await client.get(
+        f"/api/v1/documents/{document['id']}", headers=auth_cookie_headers(user.id)
+    )
+    assert detail.json()["size_bytes"] == len(PDF_BYTES)
+    assert detail.json()["checksum_sha256"] == document["checksum_sha256"]
+
+
+async def test_repeated_confirm_does_not_reach_another_tenants_quota(
+    client, db_session
+):
+    """Part (d) of the idempotency fix's regression coverage -- a repeated
+    confirm can only ever touch the confirming user's own row
+    (document_repo.get/confirm_if_unconfirmed are both user_id-scoped), so
+    a second user's storage usage is untouched by the first user's
+    (repeated) confirm."""
+    from app.repositories.user_repository import UserRepository
+
+    owner = await make_user(db_session)
+    other = await make_user(db_session)
+    document = await _upload_document(client, owner.id)
+
+    await client.post(
+        f"/api/v1/documents/{document['id']}/confirm",
+        headers=auth_cookie_headers(owner.id),
+    )
+
+    other_refreshed = await UserRepository(db_session).get_by_id(other.id)
+    assert other_refreshed.storage_used_bytes == 0
+
+
 async def test_confirm_size_mismatch_rejected(client, db_session):
     user = await make_user(db_session)
     presign = await client.post(
