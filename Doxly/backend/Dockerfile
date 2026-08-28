@@ -6,14 +6,12 @@
 # closes the backend/worker half that Phase 17 left undone — see
 # tasks/18-ci-cd.md's Implementation Notes for why it lands here instead).
 #
-# KNOWN GAP, not fabricated here: this image's default CMD runs the FastAPI
-# HTTP server. The background-worker entrypoint (an RQ queue consumer,
-# roadmap.md Phase 5/8 scope) does not exist as runnable code yet — no
-# `app/worker.py`/`app.core.queue` module has been implemented in this
-# codebase. Per architecture.md §2.3 the worker is meant to be this same
-# image invoked with a different CMD once that module exists; until then,
-# any deploy step that tries to run a worker process from this image has
-# nothing to invoke. See tasks/18-ci-cd.md for the full note.
+# This image's default CMD runs the FastAPI HTTP server. The background-
+# worker entrypoint (`rq worker document_processing extraction comparison
+# summary`, app/core/queue.py's four queue names) is this same image with
+# its CMD overridden — implemented as of R3/R5/R6/R7 (tasks/remediation-
+# plan.md) and exercised by docker-compose.yml's `worker` service. No
+# separate Dockerfile for it, per architecture.md §2.3.
 
 FROM python:3.12-slim AS builder
 WORKDIR /app
@@ -76,6 +74,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)"
 
 # Container platform's deploy config overrides this CMD for the worker
-# process once its entrypoint module exists (architecture.md §2.3) — see the
-# KNOWN GAP note above.
+# process (architecture.md §2.3) — see the module docstring above.
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

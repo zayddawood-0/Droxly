@@ -8,9 +8,12 @@ import { NextRequest, NextResponse } from "next/server";
  * guidance: "if a handler is doing anything more than forwarding a
  * request/relaying cookies, that's a signal it belongs in FastAPI instead").
  *
- * Not reachable yet — INTERNAL_API_URL has no backend behind it until
- * specs/roadmap.md Phase 2+. The proxy mechanics (this file) are the Phase 1
- * deliverable; the first real caller is Phase 2's auth client module.
+ * Every domain module under lib/api/ (auth, documents, chat, ...) routes
+ * through this proxy, including the chat SSE stream (lib/api/chat.ts) --
+ * `upstream.body` is passed straight through to `NextResponse` unbuffered,
+ * so a streamed FastAPI response streams to the browser as-is. The browser
+ * never calls the FastAPI origin directly for anything except a presigned
+ * storage upload (specs/deployment.md §1's topology diagram / §7).
  */
 
 async function proxy(request: NextRequest, path: string[]) {

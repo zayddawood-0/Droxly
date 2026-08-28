@@ -85,7 +85,7 @@ Names and purpose only — no real values are recorded in any spec file. Actual 
 
 | Variable | Where it lives | Purpose |
 |---|---|---|
-| `NEXT_PUBLIC_API_BASE_URL` | Frontend / Vercel | Public FastAPI origin the browser/client bundle calls directly (e.g., for SSE) |
+| `NEXT_PUBLIC_API_BASE_URL` | Frontend / Vercel | Reserved, currently unused (R12 correction: `app/api/v1/[...path]/route.ts` proxies every request, including the chat SSE stream, same-origin — the browser never calls the FastAPI origin directly, matching §1's topology diagram) |
 | `NEXT_PUBLIC_*` (display-only flags) | Frontend / Vercel | Any other non-secret, browser-visible config (e.g., feature flags safe to expose) |
 | `INTERNAL_API_URL` | Frontend / Vercel (server-only, unprefixed) | Origin the Next.js Route Handler (BFF) calls server-side; may differ from the public URL |
 | `DATABASE_URL` | Backend + Worker | Managed PostgreSQL connection string (SSL required, §6) |
@@ -161,3 +161,45 @@ This section exists because the initialization brief explicitly warns against as
 Restating the mechanism from `decisions.md` ADR-008 and the sequence diagrams in `architecture.md` §4–5, specifically through the lens of the Vercel constraint above: any operation that cannot complete within a single fast HTTP round trip (document processing, summarization, extraction, comparison) is enqueued to Redis by a quick FastAPI call and executed by the container-hosted worker, which has no timeout ceiling beyond the application-level job timeout defined in `ai.md`/`langgraph.md`. The one exception is the Document Q&A chat workflow, which streams token-by-token inline from the FastAPI container (also not Vercel) over SSE — still outside Vercel's execution model, just synchronous rather than queued, because it needs to stream to the client rather than run fully in the background.
 
 **Client-side UX implication (`FR-DOC-008`):** since the client cannot simply hold open one long-lived HTTP call to Vercel for a background job, the UI polls a status endpoint (or subscribes via SSE served from the FastAPI container) to reflect pipeline stage transitions (`queued → extracting → chunking → embedding → ready`) as they happen, rather than blocking on a single request until processing finishes.
+
+## 14. Production Launch Runbook
+
+Added by `tasks/remediation-plan.md` R12 (Production Deployment Readiness) — the "Production Launch Runbook" §15 named as a still-to-build deliverable. Written against what R1–R12 actually built and verified; it does not invent a container-platform choice `decisions.md` OQ-13 leaves open, and does not claim a step is done that this repository has not actually performed.
+
+### 14.1 Prerequisites (must be true before starting)
+
+- [ ] A container platform is chosen and its config committed (`decisions.md` OQ-13 resolved — e.g. `fly.toml` or a Railway service definition). **Not yet done** as of R12 — this blocks every step below that says "deploy the backend/worker image."
+- [ ] Managed Postgres provisioned with the `pgvector` extension enabled and confirmed (§6), reachable only over SSL.
+- [ ] Managed Redis provisioned (§5.1).
+- [ ] Every secret in §5.1's inventory has a real production value in the platform's secret store — `backend/.env.example` documents the full variable list; none of its values are usable as-is in production (`JWT_SIGNING_KEY`'s local default is explicitly insecure — see `app/core/config.py`).
+- [ ] `CORS_ALLOWED_ORIGINS` set to the exact production frontend origin(s) — never a wildcard (§11).
+- [ ] `STORAGE_PROVIDER` set to a real implementation. **As of R12, `local` is the only `StorageProvider` implementation that exists** (`decisions.md` OQ-04 is still open) — `app/core/storage.py`'s `get_storage_provider()` raises `RuntimeError` for any other value rather than silently falling back, so this is a hard deploy blocker, not a soft warning, until a real cloud provider is implemented.
+- [ ] DNS/TLS configured for the backend's public origin (container platform ingress) and the frontend's Vercel domain.
+
+### 14.2 Deploy sequence
+
+1. **CI builds and pushes images.** `.github/workflows/ci.yml`'s existing lint → typecheck → test → build pipeline produces the backend/worker image (shared, `backend/Dockerfile`) and pushes it to GHCR; the `deploy` job is currently gated on `FLY_API_TOKEN`/`DATABASE_URL` secrets being present and no-ops cleanly without them (confirmed by reading the workflow directly).
+2. **Backend replicas start.** The platform runs the pushed image with its default `CMD` — `alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000` is the local/Compose equivalent (`docker-compose.yml`); the production platform's own start command should apply migrations once (not once per replica racing each other — a documented platform-specific concern, e.g. a Fly.io release command or a dedicated one-off migration step) before traffic-serving replicas start. **Never run `alembic upgrade head` concurrently from N racing replicas.**
+3. **Worker replicas start**, same image, command overridden to `rq worker document_processing extraction comparison summary --url $REDIS_URL` (exactly `docker-compose.yml`'s `worker` service, with GHCR's image instead of a local build).
+4. **Health check gates traffic.** The platform's orchestrator polls `GET /health` (§3) before routing live traffic to a new replica and before considering a deploy successful — confirm the platform's health-check path/interval is actually configured to point at `/health`, since a missing/misconfigured check silently defeats the zero-downtime-deploy guarantee this section otherwise describes.
+5. **Frontend deploys via Vercel's Git integration** (§2) — independent of the backend/worker deploy above; there is no ordering dependency for a routine deploy (the frontend calls whatever backend version is currently live), but a **breaking API contract change** must ship the backend first and the frontend second, same as any client/server versioned API.
+
+### 14.3 Post-deploy verification
+
+1. `curl https://<backend-origin>/health` returns `{"status": "ok"}`.
+2. Run `backend/scripts/smoke_test.py` (R12's scripted smoke-test deliverable) against the deployed origin — **as written, it targets a locally-spawned `uvicorn`/`rq worker` pair for a live-local run; pointing it at a real deployed environment requires supplying that origin instead of spawning local subprocesses**, a follow-up adaptation explicitly not made in this revision (see the R12 readiness report's own distinction between "live local" and "actual production" verification levels — this script has only been run in the former mode).
+3. Confirm the P0 golden path manually or via the adapted smoke test: register → login → upload → processing reaches `ready` → chat produces a cited answer → summarization/extraction/comparison each reach `completed` → search returns tenant-scoped results.
+4. Check the platform's log stream for `request.completed`/`job.completed`/`job.failed` structured log lines (`app/core/logging.py`, `app/workers/_observability.py`) — confirms structured JSON logging is actually active in the deployed environment, not just locally.
+
+### 14.4 Rollback
+
+- **Frontend:** Vercel's own instant-rollback-to-previous-deployment feature (dashboard or CLI) — no application-specific steps needed.
+- **Backend/worker:** redeploy the previous known-good image tag from GHCR. A rollback that also needs to reverse a database migration is a separate, higher-risk operation — `devops.md`'s migration-authoring guidance (write reversible migrations where practical) is what makes this possible at all; a rollback plan that assumes forward-only migrations were the only kind ever written is not safe to rely on without checking the specific migration involved.
+- **Never** roll back the backend image without checking whether the currently-applied migration is still compatible with the older code — a rollback that reintroduces code expecting a pre-migration schema against an already-migrated database is a self-inflicted outage.
+
+### 14.5 What this runbook does not yet cover
+
+Documented explicitly rather than silently omitted, per this task's own instruction not to overclaim completeness:
+- The actual `fly.toml`/Railway config (blocked on OQ-13).
+- A load test against a production-scale seeded dataset (`backend/scripts/load_test.py` exists and has been run against a live-local instance only — see the R12 readiness report).
+- An automated, CI-triggered smoke test against a real staging/production environment (today it is a manually-invoked script).

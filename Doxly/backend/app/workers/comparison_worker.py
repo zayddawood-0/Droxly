@@ -8,6 +8,7 @@ worker.py`'s docstring documents.
 """
 
 import asyncio
+import logging
 import uuid
 from typing import Any
 
@@ -21,6 +22,15 @@ from app.services.comparison_processing_service import (
     EMPTY_COMPARISON_RESULT,
     ComparisonProcessingService,
 )
+from app.workers._observability import (
+    log_job_completed,
+    log_job_failed,
+    log_job_started,
+)
+
+logger = logging.getLogger(__name__)
+
+_JOB_TYPE = "comparison"
 
 
 def run_comparison_job(user_id: str, comparison_id: str) -> None:
@@ -29,8 +39,14 @@ def run_comparison_job(user_id: str, comparison_id: str) -> None:
 
 
 async def _run_comparison_job_async(user_id: str, comparison_id: str) -> None:
+    start = log_job_started(logger, _JOB_TYPE, comparison_id=comparison_id)
     try:
         await _run_comparison_async(uuid.UUID(user_id), uuid.UUID(comparison_id))
+    except Exception:
+        log_job_failed(logger, _JOB_TYPE, start, comparison_id=comparison_id)
+        raise
+    else:
+        log_job_completed(logger, _JOB_TYPE, start, comparison_id=comparison_id)
     finally:
         await engine.dispose()  # see module docstring — must run in THIS loop
 

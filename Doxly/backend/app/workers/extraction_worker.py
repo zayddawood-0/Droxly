@@ -11,6 +11,7 @@ next job a connection still bound to this job's already-closed loop).
 """
 
 import asyncio
+import logging
 import uuid
 from typing import Any
 
@@ -25,6 +26,15 @@ from app.repositories.extraction_repository import ExtractionRepository
 from app.repositories.observability_repository import AiRequestRepository
 from app.services.extraction_processing_service import ExtractionProcessingService
 from app.services.retrieval_service import RetrievalService
+from app.workers._observability import (
+    log_job_completed,
+    log_job_failed,
+    log_job_started,
+)
+
+logger = logging.getLogger(__name__)
+
+_JOB_TYPE = "extraction"
 
 
 def run_extraction_job(user_id: str, extraction_id: str) -> None:
@@ -33,8 +43,14 @@ def run_extraction_job(user_id: str, extraction_id: str) -> None:
 
 
 async def _run_extraction_job_async(user_id: str, extraction_id: str) -> None:
+    start = log_job_started(logger, _JOB_TYPE, extraction_id=extraction_id)
     try:
         await _run_extraction_async(uuid.UUID(user_id), uuid.UUID(extraction_id))
+    except Exception:
+        log_job_failed(logger, _JOB_TYPE, start, extraction_id=extraction_id)
+        raise
+    else:
+        log_job_completed(logger, _JOB_TYPE, start, extraction_id=extraction_id)
     finally:
         await engine.dispose()  # see module docstring — must run in THIS loop
 

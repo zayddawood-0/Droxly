@@ -33,6 +33,7 @@ loop.
 """
 
 import asyncio
+import logging
 import uuid
 from typing import Any
 
@@ -45,6 +46,15 @@ from app.repositories.document_repository import (
 )
 from app.repositories.observability_repository import AiRequestRepository
 from app.services.document_processing_service import DocumentProcessingService
+from app.workers._observability import (
+    log_job_completed,
+    log_job_failed,
+    log_job_started,
+)
+
+logger = logging.getLogger(__name__)
+
+_JOB_TYPE = "document_processing"
 
 _TRANSIENT_FAILURE_MESSAGE = (
     "A temporary error occurred while processing this document. "
@@ -64,8 +74,14 @@ def process_document_job(user_id: str, document_id: str) -> None:
 
 
 async def _process_document_job_async(user_id: str, document_id: str) -> None:
+    start = log_job_started(logger, _JOB_TYPE, document_id=document_id)
     try:
         await _process_document_async(uuid.UUID(user_id), uuid.UUID(document_id))
+    except Exception:
+        log_job_failed(logger, _JOB_TYPE, start, document_id=document_id)
+        raise
+    else:
+        log_job_completed(logger, _JOB_TYPE, start, document_id=document_id)
     finally:
         await engine.dispose()  # see module docstring — must run in THIS loop
 

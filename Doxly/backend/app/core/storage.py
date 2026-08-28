@@ -167,7 +167,35 @@ def get_storage_provider() -> StorageProvider:
     fresh instance per call would still work correctly (same settings),
     but the singleton avoids redundant directory-existence checks per
     request.
+
+    R12 (Production Deployment Readiness) fix: this used to construct
+    `LocalFilesystemStorageProvider` unconditionally, never actually
+    reading `settings.storage_provider` — so setting `STORAGE_PROVIDER` to
+    anything else in a real deployment would silently keep using local
+    container-filesystem storage rather than failing loudly. That's a
+    materially worse failure mode here than the identical-looking
+    `get_llm_provider()`/`get_embedding_provider()` "unrecognized value
+    silently falls back to fake" pattern elsewhere in this codebase: an
+    AI-provider fallback degrades a feature visibly (canned responses); a
+    silent storage fallback in a multi-replica deployment
+    (`deployment.md` §3's "minimum 2 replicas") means a file uploaded via
+    one replica is invisible to (or lost when) a request lands on another
+    — real, silent data loss, not a degraded-but-working feature. No real
+    cloud `StorageProvider` implementation exists yet (`decisions.md`
+    OQ-04 — provider choice is still open, requires a human with
+    dashboard/billing access to provision); until one does, an explicit,
+    unmistakable startup-time failure is the correct behavior for any
+    `STORAGE_PROVIDER` value other than "local" — matching
+    `get_llm_provider`'s own "raise, don't silently substitute" behavior
+    for its real-but-misconfigured case.
     """
+    if settings.storage_provider != "local":
+        raise RuntimeError(
+            f"STORAGE_PROVIDER={settings.storage_provider!r} has no real "
+            "implementation yet (decisions.md OQ-04 is still open) — set "
+            "STORAGE_PROVIDER=local, or implement and register a real "
+            "StorageProvider for this value before deploying with it."
+        )
     global _provider_singleton
     if _provider_singleton is None:
         _provider_singleton = LocalFilesystemStorageProvider(

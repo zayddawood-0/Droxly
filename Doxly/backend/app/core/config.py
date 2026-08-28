@@ -104,5 +104,27 @@ class Settings(BaseSettings):
     # to be misidentified as stuck. See ADR-026 for the full reasoning.
     document_processing_stale_threshold_seconds: int = 900
 
+    # --- R12 (tasks/remediation-plan.md) — production deployment readiness ---
+
+    # deployment.md §5.1/§11 — comma-separated list of origins permitted to
+    # call the API. Locked to the exact production frontend domain(s) in
+    # production (never a wildcard, per §11); defaults to the local Next.js
+    # dev origin so a fresh clone works unauthenticated-CORS-wise out of the
+    # box, matching every other setting's "safe local default" convention.
+    cors_allowed_origins: str = "http://localhost:3000"
+
+    # deployment.md §5.1/§10 — per-environment log verbosity (`debug`
+    # locally, `info`/`warning` in production). core/logging.py's
+    # configure_logging() is the only reader.
+    log_level: str = "info"
+
+    @property
+    def cors_allowed_origins_list(self) -> list[str]:
+        return [
+            origin.strip()
+            for origin in self.cors_allowed_origins.split(",")
+            if origin.strip()
+        ]
+
 
 settings = Settings()
