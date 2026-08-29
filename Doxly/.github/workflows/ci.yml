@@ -238,7 +238,7 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           if [ -z "$DATABASE_URL" ]; then
-            echo "DATABASE_URL secret not set — skipping production migration. Configure it once a production database exists (decisions.md OQ-13)."
+            echo "DATABASE_URL secret not set — skipping production migration. Configure it once the Railway Postgres instance exists (deployment.md §15)."
           else
             alembic upgrade head
           fi
@@ -267,19 +267,20 @@ jobs:
             ${{ steps.image.outputs.name }}:latest
             ${{ steps.image.outputs.name }}:${{ github.sha }}
 
-      # decisions.md OQ-13: which container platform (Fly.io/Railway/ECS)
-      # actually hosts this image is still open — provisioning one requires
-      # a human with dashboard/billing access. This step is written and
-      # ready; it no-ops with a clear message until FLY_API_TOKEN (or the
-      # chosen platform's equivalent) exists as a repository secret, so no
-      # further code change is needed once that's provisioned.
-      - name: Deploy image to container platform
+      # decisions.md OQ-13: resolved to Railway (release-closure pass,
+      # 2026-08-29) — backend/worker deploy there as two services from this
+      # same image. This step is written and ready; it no-ops with a clear
+      # message until RAILWAY_TOKEN exists as a repository secret (the
+      # actual project/service provisioning is a separate, human,
+      # dashboard/billing action — deployment.md §15.10), so no further code
+      # change is needed once that's provisioned.
+      - name: Deploy image to Railway
         env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: |
-          if [ -z "$FLY_API_TOKEN" ]; then
-            echo "No container-platform deploy secret configured yet (decisions.md OQ-13 is still open) — image was pushed to GHCR but not deployed."
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "No Railway deploy secret configured yet (deployment.md §15.10) — image was pushed to GHCR but not deployed."
             echo "Image: ${{ steps.image.outputs.name }}:${{ github.sha }}"
           else
-            echo "FLY_API_TOKEN present — platform deploy would run here (e.g. 'flyctl deploy --image ${{ steps.image.outputs.name }}:${{ github.sha }}')."
+            echo "RAILWAY_TOKEN present — platform deploy would run here (e.g. 'railway up --service backend' / 'railway up --service worker', or redeploying each service pinned to ${{ steps.image.outputs.name }}:${{ github.sha }} via the Railway CLI/API)."
           fi

@@ -200,6 +200,100 @@ Added by `tasks/remediation-plan.md` R12 (Production Deployment Readiness) — t
 ### 14.5 What this runbook does not yet cover
 
 Documented explicitly rather than silently omitted, per this task's own instruction not to overclaim completeness:
-- The actual `fly.toml`/Railway config (blocked on OQ-13).
+- The actual Railway project/service provisioning and first real deploy (`OQ-13` is resolved to Railway — see §15 — but no account has been provisioned and no deploy has occurred).
 - A load test against a production-scale seeded dataset (`backend/scripts/load_test.py` exists and has been run against a live-local instance only — see the R12 readiness report).
 - An automated, CI-triggered smoke test against a real staging/production environment (today it is a manually-invoked script).
+
+## 15. Railway Deployment Configuration
+
+Added by the release-closure pass that resolved `decisions.md` OQ-13. This section is the Railway-specific instantiation of §1's topology and §14's runbook — it does not repeat what's identical to any container platform (health checks, graceful shutdown, the runbook's deploy sequence shape); it covers what's specific to Railway or was discovered while checking Railway-specific compatibility.
+
+### 15.1 Service topology on Railway
+
+One Railway **project** containing four services:
+
+| Service | Image/source | Start command | Public networking |
+|---|---|---|---|
+| `backend` | `backend/Dockerfile`, unmodified | Image default (`uvicorn app.main:app --host 0.0.0.0 --port 8000`) | Public domain (Railway-generated `*.up.railway.app` or a custom domain) — this is what Vercel's `INTERNAL_API_URL` points at |
+| `worker` | Same `backend/Dockerfile`, same build context | Overridden: `rq worker document_processing extraction comparison summary --url $REDIS_URL` | None — never reachable from outside the project, exactly like `docker-compose.yml`'s `worker` service |
+| `postgres` | Railway's managed PostgreSQL **or** a custom Docker image deploy of `pgvector/pgvector:pg16` — see §15.4 for why this choice isn't yet finalized | N/A (managed) | Private networking only (`*.railway.internal`) |
+| `redis` | Railway's managed Redis | N/A (managed) | Private networking only |
+
+The **Next.js frontend is not a Railway service** — per `ADR-007` (unchanged), it continues to deploy to Vercel. "Railway architecture" for the frontend is: nothing runs there. `frontend/Dockerfile` remains what `ADR-006` always scoped it for — local `docker-compose` dev-parity only, not a production deploy target.
+
+### 15.2 Can the existing Dockerfiles deploy directly?
+
+**Backend/worker: yes, unmodified.** Railway's "Deploy from Dockerfile" mode builds `backend/Dockerfile` as-is; the `worker` service is the same image with only its Start Command overridden in Railway's dashboard/config, mirroring `docker-compose.yml`'s own `backend`/`worker` split exactly (`ADR-007`'s "same codebase, same dependency layer, differing only in the container's entrypoint command"). No Railway-specific Dockerfile fork is needed or was created.
+
+**Frontend: not applicable** — it deploys to Vercel, not Railway (§15.1).
+
+### 15.3 Required environment variables per service
+
+Names and purpose only, per `deployment.md` §5's existing convention — no real values recorded here.
+
+**`backend` and `worker` (identical set — both need every variable either might read):**
+
+| Variable | Value on Railway | Secret? |
+|---|---|---|
+| `DATABASE_URL` | **Do not bind directly to Railway's auto-generated Postgres `DATABASE_URL` reference** — see §15.4. Must be set explicitly with the `postgresql+asyncpg://` scheme. | Secret (contains the DB password) |
+| `REDIS_URL` | Bind directly to Railway's Redis service reference (`${{Redis.REDIS_URL}}`) — format is already compatible, no scheme issue (§15.5). | Secret |
+| `JWT_SIGNING_KEY` | A real, random secret — **the local-dev default in `config.py` is explicitly insecure and must never be used in production.** | **Secret** |
+| `ENVIRONMENT` | `production` — this is what flips `secure=True` on session/CSRF cookies (`_cookies_secure()`/`request_context_middleware`'s HSTS-enabling check) and disables the local-dev-only local-storage router (`app/main.py`'s `if settings.storage_provider == "local"` mount). | Non-secret config |
+| `CORS_ALLOWED_ORIGINS` | The real Vercel production frontend domain(s) — never a wildcard. See §15.6 for why this matters less than it would in a non-BFF architecture, but still must be set correctly as defense-in-depth per `security.md`. | Non-secret config |
+| `FRONTEND_BASE_URL` | The real Vercel production frontend origin — used to construct the Google OAuth `redirect_uri` (§15.9) and any email links. | Non-secret config |
+| `BACKEND_PUBLIC_BASE_URL` | The Railway backend service's own public domain — used only for `LocalFilesystemStorageProvider`'s presigned URLs, which are **not** the production storage path (§15.4's sibling concern — see `STORAGE_PROVIDER` below). | Non-secret config |
+| `STORAGE_PROVIDER` | **A separate, still-open blocker, independent of OQ-13/Railway.** `local` is the only implemented `StorageProvider` (`app/core/storage.py`'s `get_storage_provider()` raises `RuntimeError` for any other value, R12) — `decisions.md` OQ-04 (cloud storage provider choice) is still open. `local` writes to the container's own filesystem, which does not persist across a Railway redeploy/restart and is not the durable, shared storage a real production deployment needs. **Do not launch to real users with `STORAGE_PROVIDER=local`** — this must be resolved (OQ-04 decided, a real provider implemented) before production launch, regardless of the Railway decision. | N/A until OQ-04 resolves and a real provider is implemented |
+| `LOG_LEVEL` | `info` or `warning` | Non-secret config |
+| `LLM_PROVIDER` / `ANTHROPIC_API_KEY` | `anthropic` / a real API key, once ready to use real LLM calls (defaults to `fake` otherwise, which is safe but non-functional for real users) | Secret (API key) |
+| `EMBEDDING_PROVIDER` / `OPENAI_API_KEY` | `openai` / a real API key, same caveat as above | Secret (API key) |
+| `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` | Real Google Cloud OAuth client credentials, once Google OAuth is wanted in production (defaults to `oauth_not_configured` responses otherwise, which is safe) | Secret |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USERNAME` / `SMTP_PASSWORD` | Real SMTP relay credentials, once email verification/reset should actually deliver mail (defaults to `FakeEmailProvider`, safe but non-functional for real users) | Secret (username/password) |
+| `EMAIL_FROM_ADDRESS` | The real sending address | Non-secret config |
+| `EMAIL_PROVIDER` | `smtp` once the above is configured | Non-secret config |
+| `STORAGE_ACCESS_TOKEN` / `STORAGE_ACCESS_KEY_ID` / `STORAGE_SECRET_ACCESS_KEY` | Credentials for whichever real `StorageProvider` OQ-04 eventually resolves to | Secret |
+| `DOCUMENT_PROCESSING_STALE_THRESHOLD_SECONDS` | `900` (the tested default) unless deliberately tuned | Non-secret config |
+| `STORAGE_PRESIGNED_URL_EXPIRES_IN_SECONDS` | `900` (the tested default) unless deliberately tuned | Non-secret config |
+
+**Vercel (frontend) — unchanged by this decision, restated for completeness:**
+
+| Variable | Value | Secret? |
+|---|---|---|
+| `INTERNAL_API_URL` | The Railway `backend` service's public domain | Non-secret (server-only, but not a credential) |
+| `NEXT_PUBLIC_API_BASE_URL` | Reserved, unused — see `frontend/.env.example`'s own comment (R12) | N/A |
+
+### 15.4 Database: two things that must be verified before the first migration runs, not assumed
+
+1. **Connection string scheme.** Railway's managed Postgres add-on exposes `DATABASE_URL` in the bare `postgresql://user:pass@host:port/db` form. This codebase's `app/core/database.py` uses SQLAlchemy's **async** engine, which requires the `postgresql+asyncpg://` scheme — a bare `postgresql://` URL will fail to connect (the sync `psycopg2` dialect would accept it, but nothing in this codebase uses that dialect). **Do not bind the backend/worker services' `DATABASE_URL` directly to Railway's auto-generated Postgres reference.** Instead, set it explicitly using Railway's variable-reference syntax against the Postgres service's individual connection-component variables, e.g. `postgresql+asyncpg://${{Postgres.PGUSER}}:${{Postgres.PGPASSWORD}}@${{Postgres.PGHOST}}:${{Postgres.PGPORT}}/${{Postgres.PGDATABASE}}` (exact variable names to confirm against the actual provisioned Postgres service's "Variables" tab — Railway's naming has been consistent but should be checked against the live instance, not assumed from documentation alone).
+2. **`pgvector` extension availability.** Every migration that touches `document_chunks.embedding` runs `CREATE EXTENSION IF NOT EXISTS vector` (`alembic/versions/20260821_phase3_remaining_schema.py`) — this **activates** the extension per-database but requires the extension's compiled files to already exist on the Postgres server. `docker-compose.yml`'s local Postgres uses the `pgvector/pgvector:pg16` image specifically because standard Postgres images don't ship it. **Whether Railway's managed PostgreSQL template includes `pgvector` could not be verified without a live Railway account in this pass** — `deployment.md` §6 already flagged this exact class of risk generically ("not every managed Postgres offering ships the `pgvector` extension enabled by default"), and this is that risk made concrete for the chosen platform. **Recommended safe path if the managed template doesn't include it:** deploy Postgres on Railway as a custom Docker image service using `pgvector/pgvector:pg16` (Railway supports deploying any Docker image as a service, not only its own managed database templates) — this exactly matches the already-tested local/CI image, eliminating the question entirely rather than hoping the managed template happens to include it.
+
+Neither of these was silently resolved — both require a decision/verification step against the real, provisioned Railway Postgres instance before `alembic upgrade head` is run there for the first time.
+
+### 15.5 Redis
+
+Railway's managed Redis add-on exposes `REDIS_URL` as `redis://default:password@host:port` — this is directly compatible with `redis.asyncio.from_url()` (used by `app/core/rate_limit.py`, `app/core/chat_stream_control.py`, `app/core/queue.py`) with no scheme translation needed, unlike Postgres. Bind the backend/worker services' `REDIS_URL` directly to Railway's Redis reference variable.
+
+### 15.6 CORS, cookies, and why the BFF pattern changes what actually matters here
+
+`app/main.py`'s `CORSMiddleware` and `security.md`'s cookie requirements (httpOnly, `secure` when not `environment=local`, `SameSite=Lax`) are unchanged by this decision and must still be configured correctly (`CORS_ALLOWED_ORIGINS` set to the real Vercel domain, `ENVIRONMENT=production` on Railway). **But the actual risk this protects against is smaller than a naive cross-origin-deployment reading would suggest**, confirmed by R12's own BFF-proxy finding: `frontend/app/api/v1/[...path]/route.ts` proxies every request — including the chat SSE stream — same-origin from the browser's perspective. The browser only ever talks to Vercel; it never calls the Railway backend origin directly for anything except a presigned storage upload (`deployment.md` §7, once a real `StorageProvider` exists). This means the `Set-Cookie` header the browser actually receives is scoped to the **Vercel** domain, not Railway's — there is no cross-origin cookie problem to solve between Vercel and Railway specifically. `CORS_ALLOWED_ORIGINS`/cookie `secure`/`SameSite` settings remain required (defense-in-depth, and Next.js's own server-side `fetch` to Railway is still a real cross-service call `security.md` cares about), but getting them "wrong" in a Vercel+Railway split does not create the classic browser-side cross-origin auth-cookie failure mode a reader might expect.
+
+### 15.7 HTTPS
+
+Railway terminates TLS for its public service domains by default (and for any attached custom domain, via automatic certificate provisioning) — matching `deployment.md` §11's "the container platform's ingress must terminate TLS" requirement with no additional configuration needed on the application side beyond `ENVIRONMENT=production` enabling `secure` cookies and HSTS (`app/main.py`'s `request_context_middleware`).
+
+### 15.8 Migrations on Railway
+
+Per §14.2's existing "never run `alembic upgrade head` concurrently from N racing replicas" guidance (unchanged by this decision): Railway does not have a first-class "release phase" step distinct from the running service the way some platforms do, so the safest pattern — matching `docker-compose.yml`'s own `backend` service exactly — is the `backend` service's start command running migrations before starting `uvicorn`: `sh -c "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000"` (the `Dockerfile`'s default CMD, unchanged; Railway would need this same `sh -c` wrapper configured as the backend service's actual start command, since the bare Dockerfile CMD is `uvicorn` alone with no migration step — that's `docker-compose.yml`'s own override, not the image's baked-in default, and the same override needs to exist as Railway's Start Command for the `backend` service). With Railway's default of one instance for the `backend` service at MVP scale, the "N racing replicas" concern is theoretical until `NFR-SCALE-001`'s 2-replica minimum is actually configured — worth setting the replica count to 1 until the migration-race question is revisited, or moving to a dedicated Railway "pre-deploy command" (a feature Railway has offered in various forms) if scaling to 2+ backend replicas before this is addressed further.
+
+### 15.9 OAuth production configuration — a non-obvious pitfall specific to the BFF split
+
+`backend/app/api/v1/routers/auth.py`'s `oauth_google_start`/`oauth_google_callback` both construct `redirect_uri = f"{settings.frontend_base_url}{OAUTH_CALLBACK_PATH}"` — **the redirect URI Google is told to use is the frontend's (Vercel) domain, not the backend's (Railway) domain**, even though FastAPI is what ultimately handles the callback (the request lands on Vercel, then the BFF proxy forwards `/api/v1/*` to Railway, same as every other request). **The Google Cloud Console OAuth client's "Authorized redirect URI" must therefore be set to `https://<production-frontend-domain>/api/v1/auth/oauth/google/callback` — registering the Railway domain instead will break OAuth entirely.** This behavior predates this ADR and is not changed by the Railway decision; it's flagged here because it's the single easiest mistake to make when a reader's mental model assumes "the backend's own domain" for an OAuth callback.
+
+### 15.10 What remains before an actual Railway deploy can happen
+
+Per this pass's explicit instruction not to deploy: none of the following was done, only documented as the next concrete steps —
+1. Create the Railway project and its four services (§15.1).
+2. Resolve §15.4's two Postgres verification points against the real provisioned instance.
+3. Set every variable in §15.3, with real secret values from a password manager/secrets vault — never typed into chat or committed to any file.
+4. Register the correct Google OAuth redirect URI (§15.9), if Google OAuth is wanted at launch.
+5. Point Vercel's `INTERNAL_API_URL` at the real Railway backend domain once it exists.
+6. Run the Production Launch Runbook's existing §14.2 deploy sequence and §14.3 post-deploy verification.
