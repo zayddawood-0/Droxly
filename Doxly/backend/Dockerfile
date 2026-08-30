@@ -70,8 +70,19 @@ EXPOSE 8000
 # No curl/wget in python:3.12-slim by design (keeps the image minimal) — the
 # healthcheck uses the interpreter that's already there instead of adding a
 # package just to probe one endpoint.
+#
+# Reads $PORT the same way the CMD below does (Railway pre-deployment
+# verification, this pass's finding L.5): the CMD's `${PORT:-8000}` fix
+# (J.1) only changed what port uvicorn binds to — this HEALTHCHECK was left
+# hardcoded to 127.0.0.1:8000, so on a Railway deploy where $PORT differs
+# from 8000, Docker's own HEALTHCHECK would probe the wrong port and report
+# the container unhealthy even though it's correctly serving traffic on the
+# real one. `os.environ.get` (not `${PORT:-8000}` shell interpolation) is
+# used here because HEALTHCHECK's CMD form runs the given command directly,
+# not through a shell — an unexpanded `${...}` would be passed to Python
+# literally rather than substituted.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD python -c "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)"
+    CMD python -c "import os,sys,urllib.request; port=os.environ.get('PORT','8000'); sys.exit(0 if urllib.request.urlopen(f'http://127.0.0.1:{port}/health', timeout=3).status == 200 else 1)"
 
 # Container platform's deploy config overrides this CMD for the worker
 # process (architecture.md §2.3) — see the module docstring above.

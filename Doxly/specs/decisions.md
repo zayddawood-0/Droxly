@@ -86,11 +86,11 @@ Per Section 37 of the initialization brief, every open question below has an exp
 - **Consequences:** Requires a Redis instance in every environment. Job status must be polled or pushed to the client (SSE/websocket) for UI progress indicators.
 - **Status:** Decided.
 
-## ADR-009: File storage — Object storage via presigned URLs (Vercel Blob default, S3-compatible interface)
+## ADR-009: File storage — Object storage via presigned URLs (Cloudflare R2, S3-compatible interface)
 
 - **Decision:** Uploaded files are stored in object storage, never on local disk or in Postgres. Uploads go directly from the browser to storage via a short-lived presigned URL (not proxied through the Next.js/FastAPI request body), to avoid Vercel's serverless request body limits and reduce backend load.
-- **Reason:** See Open Question OQ-04 below — default provider is Vercel Blob for MVP given the Vercel frontend, with the storage layer built behind an abstraction (`StorageProvider` interface) so S3/Cloudflare R2/GCS can be substituted without touching business logic.
-- **Status:** Decided (mechanism); provider choice is **Open**, see OQ-04.
+- **Reason:** See Open Question OQ-04 below — provider is **Cloudflare R2** (resolved 2026-08-31), reached behind the same `StorageProvider` abstraction this ADR always specified, so the mechanism (presigned URLs, no proxying through the API body) is unaffected by which provider backs it.
+- **Status:** Decided (mechanism and provider — see OQ-04 for the provider resolution's own record).
 
 ## ADR-010: Authentication — Backend-issued JWT (access + refresh), httpOnly cookies, OAuth via Authlib
 
@@ -218,11 +218,18 @@ Per Section 37 of the initialization brief, every open question below has an exp
 - **Why:** Cheapest, most documented, sufficient quality for document RAG at MVP scale; swappable later.
 - **Status:** **Decided, confirmed at Phase 6 implementation time.** `EmbeddingProvider` (ADR-012) ships with two implementations: `OpenAIEmbeddingProvider` (the real `text-embedding-3-small` default, activated by setting `EMBEDDING_PROVIDER=openai` + `OPENAI_API_KEY`) and `FakeEmbeddingProvider` (deterministic, feature-hashing based, zero-cost — the *active default* until a key is supplied, and permanently the required provider for RAG-layer tests per `testing.md` §4's "never a live embedding API call in this layer"). No product/service code depends on which one is active — only `app/ai/embeddings.py`'s `get_embedding_provider()` reads the setting. Switching to real embeddings for a given environment is a config change, not a code change.
 
-### OQ-04 — File storage provider
+### OQ-04 — File storage provider — RESOLVED: Cloudflare R2
+
 - **Question:** Vercel Blob vs. S3 vs. Cloudflare R2 vs. GCS?
-- **Recommended default:** Vercel Blob for MVP (zero-config with the Vercel frontend, presigned uploads supported natively). Interface (`StorageProvider`) allows swapping to Cloudflare R2 (cheaper egress) at scale.
-- **Why:** Minimizes infra setup while the frontend is already on Vercel; avoids a third cloud vendor at MVP.
-- **Status:** **Assumption** — confirm before Phase 4 (Document Management).
+- **Decision:** **Cloudflare R2**, accessed through its S3-compatible API (the `boto3`/S3-protocol client, not a Cloudflare-specific SDK).
+- **Context:** This question's original "Assumption" default (Vercel Blob) was reasoned from "given the Vercel frontend" — that rationale weakened once `OQ-13` resolved the **backend** (the code that actually calls `StorageProvider`) to Railway, not Vercel; Vercel Blob remains technically callable from any backend via its REST API, but the zero-config, same-platform argument no longer applies. Raised and resolved during the Railway pre-deployment closure pass (`tasks/railway-pre-deployment-verification.md`) once `backend/app/core/storage.py` was inspected and confirmed to have exactly one implementation (`LocalFilesystemStorageProvider`) with no real cloud provider and no cloud SDK dependency anywhere in `pyproject.toml`.
+- **Reason:** Product decision (the product owner explicitly chose R2 over S3/Vercel Blob/GCS when presented with the options and their trade-offs) — recorded here as the authoritative resolution, not a re-derivation of the original recommended default. R2's S3-compatible API means the eventual `StorageProvider` implementation can reuse the same well-trodden `boto3` presigned-URL/HEAD/byte-range/delete patterns S3 itself would have used, while avoiding S3's egress cost.
+- **Consequences:**
+  - The `StorageProvider` ABC (`storage.py`) itself needs no interface change — R2's implementation only has to fulfill the same six methods `LocalFilesystemStorageProvider` already does.
+  - `boto3` becomes a new backend dependency, configured against R2's S3-compatible endpoint rather than AWS's — the only R2-specific detail, everything else is the boto3 S3 client used the way it would be for actual S3.
+  - `STORAGE_ACCESS_TOKEN`/`STORAGE_ACCESS_KEY_ID`/`STORAGE_SECRET_ACCESS_KEY` (already named as placeholders in `deployment.md` §15.3) become real R2 API token/credentials once provisioned — a human, dashboard-side Cloudflare action, not something this decision performs.
+  - Not yet implemented as of this decision — `get_storage_provider()` still raises `RuntimeError` for any `STORAGE_PROVIDER` value other than `local` until an `R2StorageProvider` class is actually written, tested, and registered. **Do not launch to real users with `STORAGE_PROVIDER=local`** (unchanged from `deployment.md` §15.3's existing warning) until that implementation lands.
+- **Status:** **Decided.** Implementation is a separate, still-to-be-scheduled task — this record resolves *which provider*, not the code itself.
 
 ### OQ-05 — OCR for scanned/image-based documents
 - **Question:** Should Doxly support OCR for scanned PDFs/images at launch?
@@ -337,6 +344,7 @@ Per Section 37 of the initialization brief, every open question below has an exp
 
 ## Changelog
 
+- **2026-08-31** — `OQ-04` resolved: Cloudflare R2 selected as the production object storage provider (Railway pre-deployment closure pass, `tasks/railway-pre-deployment-verification.md`). `ADR-009` updated to match. Implementation (`R2StorageProvider`, `boto3` dependency, real credentials) not yet started — a separate task.
 - **2026-08-29** — `OQ-13` resolved: Railway selected as the production container platform for backend/worker (release-closure pass, `tasks/release-closure-plan.md`). Two compatibility points flagged (Postgres URL scheme, pgvector availability) — see `deployment.md` §15.
 - **2026-08-26** — `ADR-027` (`generate_structured` usage-data return shape) and `ADR-028` (`PRESET_TEMPLATES` single-registry restructure) added — `tasks/R5-extraction.md`.
 - **2026-08-26** — `ADR-026` (worker crash recovery via reprocess staleness threshold) added — `tasks/R3-document-processing.md` remediation.
