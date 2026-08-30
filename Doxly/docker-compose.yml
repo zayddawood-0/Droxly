@@ -58,7 +58,19 @@ services:
     # in-flight request (including a streaming chat response) mid-flight.
     # `exec` replaces the shell process with uvicorn itself so it receives
     # tini's forwarded SIGTERM directly and can drain before exiting.
-    command: sh -c "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    # `$${PORT:-8000}` (Railway pre-deployment verification finding J.1,
+    # tasks/railway-pre-deployment-verification.md): Railway assigns a PORT
+    # env var the app must bind to. The `$$` (not `$`) is required here
+    # specifically because this is a Compose *file* — Compose itself
+    # interpolates any bare `${VAR}` in a compose YAML value against the
+    # *host's* shell environment/`.env` file at `docker compose up` time,
+    # before the container ever starts; `$$` escapes that so Compose emits
+    # a literal `${PORT:-8000}` into the command, which the *container's*
+    # own `sh -c` then expands at runtime against its own environment
+    # (no `PORT` is set below, so this falls back to 8000 — identical,
+    # unaffected local behavior regardless of whatever `PORT` value might
+    # happen to be set in the developer's own host shell).
+    command: sh -c "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port $${PORT:-8000}"
     ports:
       - "8000:8000"
     environment:

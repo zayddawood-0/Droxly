@@ -75,4 +75,19 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 
 # Container platform's deploy config overrides this CMD for the worker
 # process (architecture.md §2.3) — see the module docstring above.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+#
+# Railway pre-deployment verification finding J.1 (tasks/railway-pre-
+# deployment-verification.md): Railway injects a PORT environment variable
+# and routes traffic to whatever port the process actually listens on —
+# a hardcoded port is a real risk on a platform that assigns it, unlike
+# docker-compose where the host-port mapping is under our own control.
+# `${PORT:-8000}` falls back to 8000 when PORT is unset (a bare `docker
+# run` of this image with no PORT set, matching prior behavior exactly)
+# and honors Railway's assigned value otherwise. This requires an actual
+# shell to expand the `${...}` syntax — exec-form CMD (`["uvicorn", ...]`)
+# never invokes one, so a literal `${PORT:-8000}` argument would reach
+# uvicorn unexpanded and fail outright. `sh -c` plus `exec` is the same
+# graceful-shutdown-preserving pattern docker-compose.yml's `backend`
+# command already uses (R12) — `exec` replaces the shell process with
+# uvicorn so it still receives a forwarded SIGTERM directly.
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
