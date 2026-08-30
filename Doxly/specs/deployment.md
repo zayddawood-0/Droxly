@@ -93,8 +93,10 @@ Names and purpose only — no real values are recorded in any spec file. Actual 
 | `JWT_SIGNING_KEY` | Backend | Secret used to sign/verify access + refresh JWTs (ADR-010) |
 | `ANTHROPIC_API_KEY` | Backend + Worker | LLM provider credential (ADR-011) |
 | `OPENAI_API_KEY` | Backend + Worker | Embedding provider credential (ADR-012) |
-| `STORAGE_PROVIDER` | Backend + Worker | Which `StorageProvider` implementation to load (`blob`, `s3`, `r2`, …) |
-| `STORAGE_ACCESS_TOKEN` / `STORAGE_ACCESS_KEY_ID` + `STORAGE_SECRET_ACCESS_KEY` | Backend + Worker | Credentials for the configured storage provider (shape depends on provider) |
+| `STORAGE_PROVIDER` | Backend + Worker | Which `StorageProvider` implementation to load — `local` or `r2` (`decisions.md` OQ-04, resolved to Cloudflare R2) |
+| `STORAGE_ENDPOINT_URL` | Backend + Worker | R2's account-specific S3-compatible endpoint (only when `STORAGE_PROVIDER=r2`) |
+| `STORAGE_BUCKET_NAME` | Backend + Worker | The R2 bucket name (only when `STORAGE_PROVIDER=r2`) |
+| `STORAGE_ACCESS_KEY_ID` + `STORAGE_SECRET_ACCESS_KEY` | Backend + Worker | R2 API token credentials (only when `STORAGE_PROVIDER=r2`) |
 | `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` | Backend | Google OAuth2 app credentials (ADR-010, OQ-01) |
 | `CORS_ALLOWED_ORIGINS` | Backend | Comma-separated list of origins permitted to call the API (§11) |
 | `EMAIL_PROVIDER_API_KEY` | Backend | Transactional email provider credential (verification, password reset) |
@@ -108,10 +110,10 @@ Names and purpose only — no real values are recorded in any spec file. Actual 
 
 ## 7. File storage in production
 
-- Vercel Blob is the default production object store (`decisions.md` OQ-04), configured with production-scoped credentials.
+- **Cloudflare R2** is the production object store (`decisions.md` OQ-04, resolved), configured with production-scoped credentials (`STORAGE_ENDPOINT_URL`/`STORAGE_BUCKET_NAME`/`STORAGE_ACCESS_KEY_ID`/`STORAGE_SECRET_ACCESS_KEY`, `app/core/storage.py`'s `R2StorageProvider`).
 - **Presigned URL generation happens in FastAPI**, not Next.js — FastAPI is the sole authorization authority (ADR-010) and is what decides whether a given user may create a new upload slot (quota check, plan check). The Next.js route handler that the browser calls is a pass-through proxy to that FastAPI endpoint.
-- **The actual file bytes never transit Vercel or FastAPI**: the browser uploads directly to Blob storage using the presigned URL (see `architecture.md`'s Document Processing Flow sequence diagram), which is what keeps large uploads compatible with Vercel's body-size limits (§12) and off the FastAPI request path entirely.
-- **Provider is a config change, not a code change:** because storage is accessed exclusively behind the `StorageProvider` interface (`decisions.md` ADR-009), moving from Vercel Blob to S3 or Cloudflare R2 later (e.g., for cheaper egress at scale, OQ-04) means implementing/enabling a new `StorageProvider` and flipping the `STORAGE_PROVIDER` environment variable — no changes to the document-processing pipeline, API routes, or business logic that call the interface.
+- **The actual file bytes never transit Vercel or FastAPI**: the browser uploads directly to R2 using the presigned URL (see `architecture.md`'s Document Processing Flow sequence diagram), which is what keeps large uploads compatible with Vercel's body-size limits (§12) and off the FastAPI request path entirely.
+- **Provider is a config change, not a code change:** because storage is accessed exclusively behind the `StorageProvider` interface (`decisions.md` ADR-009), a future move away from R2 means implementing/enabling a new `StorageProvider` and flipping the `STORAGE_PROVIDER` environment variable — no changes to the document-processing pipeline, API routes, or business logic that call the interface.
 
 ## 8. AI provider configuration
 
@@ -173,7 +175,7 @@ Added by `tasks/remediation-plan.md` R12 (Production Deployment Readiness) — t
 - [ ] Managed Redis provisioned (§5.1).
 - [ ] Every secret in §5.1's inventory has a real production value in the platform's secret store — `backend/.env.example` documents the full variable list; none of its values are usable as-is in production (`JWT_SIGNING_KEY`'s local default is explicitly insecure — see `app/core/config.py`).
 - [ ] `CORS_ALLOWED_ORIGINS` set to the exact production frontend origin(s) — never a wildcard (§11).
-- [ ] `STORAGE_PROVIDER` set to a real implementation. **As of R12, `local` is the only `StorageProvider` implementation that exists** (`decisions.md` OQ-04 is still open) — `app/core/storage.py`'s `get_storage_provider()` raises `RuntimeError` for any other value rather than silently falling back, so this is a hard deploy blocker, not a soft warning, until a real cloud provider is implemented.
+- [ ] `STORAGE_PROVIDER=r2` with real Cloudflare R2 credentials (`STORAGE_ENDPOINT_URL`/`STORAGE_BUCKET_NAME`/`STORAGE_ACCESS_KEY_ID`/`STORAGE_SECRET_ACCESS_KEY`) — `decisions.md` OQ-04 is resolved and `R2StorageProvider` is implemented, but a real R2 bucket/API token must still be provisioned (a human, Cloudflare-dashboard action). `app/core/storage.py`'s `get_storage_provider()` raises `RuntimeError` for `STORAGE_PROVIDER=r2` with any of the four settings missing, or for any value other than `local`/`r2` — a hard deploy blocker, not a soft warning, until real credentials are set.
 - [ ] DNS/TLS configured for the backend's public origin (container platform ingress) and the frontend's Vercel domain.
 
 ### 14.2 Deploy sequence
@@ -242,7 +244,9 @@ Names and purpose only, per `deployment.md` §5's existing convention — no rea
 | `CORS_ALLOWED_ORIGINS` | The real Vercel production frontend domain(s) — never a wildcard. See §15.6 for why this matters less than it would in a non-BFF architecture, but still must be set correctly as defense-in-depth per `security.md`. | Non-secret config |
 | `FRONTEND_BASE_URL` | The real Vercel production frontend origin — used to construct the Google OAuth `redirect_uri` (§15.9) and any email links. | Non-secret config |
 | `BACKEND_PUBLIC_BASE_URL` | The Railway backend service's own public domain — used only for `LocalFilesystemStorageProvider`'s presigned URLs, which are **not** the production storage path (§15.4's sibling concern — see `STORAGE_PROVIDER` below). | Non-secret config |
-| `STORAGE_PROVIDER` | **A separate, still-open blocker, independent of OQ-13/Railway.** `local` is the only implemented `StorageProvider` (`app/core/storage.py`'s `get_storage_provider()` raises `RuntimeError` for any other value, R12) — `decisions.md` OQ-04 (cloud storage provider choice) is still open. `local` writes to the container's own filesystem, which does not persist across a Railway redeploy/restart and is not the durable, shared storage a real production deployment needs. **Do not launch to real users with `STORAGE_PROVIDER=local`** — this must be resolved (OQ-04 decided, a real provider implemented) before production launch, regardless of the Railway decision. | N/A until OQ-04 resolves and a real provider is implemented |
+| `STORAGE_PROVIDER` | `r2`, once `STORAGE_ENDPOINT_URL`/`STORAGE_BUCKET_NAME`/`STORAGE_ACCESS_KEY_ID`/`STORAGE_SECRET_ACCESS_KEY` (below) are set to real Cloudflare R2 values (`decisions.md` OQ-04, resolved). `local` (the default) writes to the container's own filesystem, which does not persist across a Railway redeploy/restart and is not the durable, shared storage a real production deployment needs. **Do not launch to real users with `STORAGE_PROVIDER=local`.** | Non-secret config |
+| `STORAGE_ENDPOINT_URL` | R2's account-specific S3-compatible endpoint, e.g. `https://<account_id>.r2.cloudflarestorage.com` — unlike AWS S3 there is no shared default; this must always be set explicitly when `STORAGE_PROVIDER=r2`. | Non-secret config (identifies the account, not a credential by itself) |
+| `STORAGE_BUCKET_NAME` | The R2 bucket provisioned for Doxly's document uploads. | Non-secret config |
 | `LOG_LEVEL` | `info` or `warning` | Non-secret config |
 | `LLM_PROVIDER` / `ANTHROPIC_API_KEY` | `anthropic` / a real API key, once ready to use real LLM calls (defaults to `fake` otherwise, which is safe but non-functional for real users) | Secret (API key) |
 | `EMBEDDING_PROVIDER` / `OPENAI_API_KEY` | `openai` / a real API key, same caveat as above | Secret (API key) |
@@ -250,7 +254,7 @@ Names and purpose only, per `deployment.md` §5's existing convention — no rea
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USERNAME` / `SMTP_PASSWORD` | Real SMTP relay credentials, once email verification/reset should actually deliver mail (defaults to `FakeEmailProvider`, safe but non-functional for real users) | Secret (username/password) |
 | `EMAIL_FROM_ADDRESS` | The real sending address | Non-secret config |
 | `EMAIL_PROVIDER` | `smtp` once the above is configured | Non-secret config |
-| `STORAGE_ACCESS_TOKEN` / `STORAGE_ACCESS_KEY_ID` / `STORAGE_SECRET_ACCESS_KEY` | Credentials for whichever real `StorageProvider` OQ-04 eventually resolves to | Secret |
+| `STORAGE_ACCESS_KEY_ID` / `STORAGE_SECRET_ACCESS_KEY` | R2 API token credentials (Cloudflare dashboard → R2 → "Manage API Tokens") | Secret |
 | `DOCUMENT_PROCESSING_STALE_THRESHOLD_SECONDS` | `900` (the tested default) unless deliberately tuned | Non-secret config |
 | `STORAGE_PRESIGNED_URL_EXPIRES_IN_SECONDS` | `900` (the tested default) unless deliberately tuned | Non-secret config |
 

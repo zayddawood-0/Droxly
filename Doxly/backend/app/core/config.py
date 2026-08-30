@@ -72,10 +72,10 @@ class Settings(BaseSettings):
 
     # --- R2 (tasks/remediation-plan.md) — document storage ---
 
-    # decisions.md ADR-009: StorageProvider is mandatory, provider choice is
-    # open (OQ-04, default recommendation Vercel Blob). "local" (a real,
-    # working filesystem-backed implementation — not a mock) is the active
-    # default until real cloud storage credentials are supplied, matching
+    # decisions.md ADR-009: StorageProvider is mandatory. Provider is
+    # Cloudflare R2 (OQ-04, resolved 2026-08-31). "local" (a real,
+    # working filesystem-backed implementation — not a mock) remains the
+    # active default until real R2 credentials are supplied, matching
     # llm_provider/embedding_provider/email_provider's identical "fake/local
     # by default" pattern. Documented as decisions.md ADR-022.
     storage_provider: str = "local"
@@ -91,6 +91,16 @@ class Settings(BaseSettings):
     # frontend_base_url, which is the Next.js origin and would be the wrong
     # target for a direct-upload URL even in local dev.
     backend_public_base_url: str = "http://localhost:8000"
+
+    # decisions.md OQ-04 (resolved) — R2StorageProvider's own config, unused
+    # while storage_provider="local". R2's S3-compatible endpoint is
+    # account-specific (unlike AWS S3's fixed regional endpoints), so unlike
+    # a real AWS deployment this must always be set explicitly once
+    # storage_provider="r2" — there is no usable default to fall back to.
+    storage_endpoint_url: str | None = None
+    storage_bucket_name: str | None = None
+    storage_access_key_id: str | None = None
+    storage_secret_access_key: str | None = None
 
     # --- R3 remediation (tasks/R3-document-processing.md, decisions.md
     # ADR-026) — worker-crash recovery ---

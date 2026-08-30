@@ -67,6 +67,14 @@ dependencies = [
   # §3.3) — declared explicitly rather than relied on as some other
   # dependency's transitive pin.
   "charset-normalizer>=3.3",
+  # boto3: decisions.md OQ-04/ADR-009 — Cloudflare R2's S3-compatible API
+  # (core/storage.py's R2StorageProvider) is reached via the standard S3
+  # client pointed at R2's account-specific endpoint, not a Cloudflare-
+  # specific SDK (R2 has none). boto3 itself is synchronous; R2StorageProvider
+  # bridges it via `asyncio.to_thread` (skills/backend.md §13's async-
+  # everywhere rule) rather than adding aioboto3 as a second, less-maintained
+  # dependency just to get a native async client.
+  "boto3>=1.35",
 ]
 
 [project.optional-dependencies]

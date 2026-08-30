@@ -227,9 +227,9 @@ Per Section 37 of the initialization brief, every open question below has an exp
 - **Consequences:**
   - The `StorageProvider` ABC (`storage.py`) itself needs no interface change — R2's implementation only has to fulfill the same six methods `LocalFilesystemStorageProvider` already does.
   - `boto3` becomes a new backend dependency, configured against R2's S3-compatible endpoint rather than AWS's — the only R2-specific detail, everything else is the boto3 S3 client used the way it would be for actual S3.
-  - `STORAGE_ACCESS_TOKEN`/`STORAGE_ACCESS_KEY_ID`/`STORAGE_SECRET_ACCESS_KEY` (already named as placeholders in `deployment.md` §15.3) become real R2 API token/credentials once provisioned — a human, dashboard-side Cloudflare action, not something this decision performs.
-  - Not yet implemented as of this decision — `get_storage_provider()` still raises `RuntimeError` for any `STORAGE_PROVIDER` value other than `local` until an `R2StorageProvider` class is actually written, tested, and registered. **Do not launch to real users with `STORAGE_PROVIDER=local`** (unchanged from `deployment.md` §15.3's existing warning) until that implementation lands.
-- **Status:** **Decided.** Implementation is a separate, still-to-be-scheduled task — this record resolves *which provider*, not the code itself.
+  - `STORAGE_ENDPOINT_URL`/`STORAGE_BUCKET_NAME`/`STORAGE_ACCESS_KEY_ID`/`STORAGE_SECRET_ACCESS_KEY` (`deployment.md` §15.3) become real R2 endpoint/bucket/API token credentials once provisioned — a human, dashboard-side Cloudflare action, not something this decision performs.
+  - **Implemented** the same pass this decision was recorded — `app/core/storage.py`'s `R2StorageProvider` fulfills the `StorageProvider` ABC via `boto3`'s S3 client (bridged through `asyncio.to_thread` per `skills/backend.md` §13's async-everywhere rule), and `get_storage_provider()` constructs it when `STORAGE_PROVIDER=r2` with all four required settings present, raising `RuntimeError` if any are missing. **Still not a real, live-tested integration** — no real R2 bucket/credentials have been exercised against it; that first live verification is deferred to whenever real R2 credentials are provisioned (a human, Cloudflare-dashboard action) and is tracked as a deployment-time step, not a code gap. **Do not launch to real users with `STORAGE_PROVIDER=local`** (unchanged from `deployment.md` §15.3's existing warning).
+- **Status:** **Decided and implemented** (code); real-credential live verification remains outstanding, the same category as `OQ-13`'s "Railway account provisioning remains a human action" caveat.
 
 ### OQ-05 — OCR for scanned/image-based documents
 - **Question:** Should Doxly support OCR for scanned PDFs/images at launch?
@@ -344,7 +344,7 @@ Per Section 37 of the initialization brief, every open question below has an exp
 
 ## Changelog
 
-- **2026-08-31** — `OQ-04` resolved: Cloudflare R2 selected as the production object storage provider (Railway pre-deployment closure pass, `tasks/railway-pre-deployment-verification.md`). `ADR-009` updated to match. Implementation (`R2StorageProvider`, `boto3` dependency, real credentials) not yet started — a separate task.
+- **2026-08-31** — `OQ-04` resolved and implemented: Cloudflare R2 selected as the production object storage provider (Railway pre-deployment closure pass, `tasks/railway-pre-deployment-verification.md`). `ADR-009` updated to match. `app/core/storage.py`'s `R2StorageProvider` added (`boto3` dependency), wired into `get_storage_provider()`, `STORAGE_ENDPOINT_URL`/`STORAGE_BUCKET_NAME` added to config/`.env.example`. Real R2 account credentials not yet provisioned — no live-bucket verification performed.
 - **2026-08-29** — `OQ-13` resolved: Railway selected as the production container platform for backend/worker (release-closure pass, `tasks/release-closure-plan.md`). Two compatibility points flagged (Postgres URL scheme, pgvector availability) — see `deployment.md` §15.
 - **2026-08-26** — `ADR-027` (`generate_structured` usage-data return shape) and `ADR-028` (`PRESET_TEMPLATES` single-registry restructure) added — `tasks/R5-extraction.md`.
 - **2026-08-26** — `ADR-026` (worker crash recovery via reprocess staleness threshold) added — `tasks/R3-document-processing.md` remediation.
